@@ -22,5 +22,6 @@ Style style_default(void)
 
         .text_size       = 14.0f,
         .text_color      = { 29, 29, 31, 255 },
+        .text_style      = 0,
     };
 }

@@ -8,6 +8,9 @@
 #include <hb.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_OUTLINE_H
+#include FT_SYNTHESIS_H
+#include FT_MODULE_H
 
 #if defined(CGUI_HAVE_FONTCONFIG)
 #include <fontconfig/fontconfig.h>
@@ -23,7 +26,13 @@
 
 struct CguiTextEngine {
     FT_Library library;
-    FT_Face face;
+    FT_Face face_regular;
+    FT_Face face_bold;
+    FT_Face face_italic;
+    FT_Face face_bold_italic;
+    bool has_bold_face;
+    bool has_italic_face;
+    bool has_bold_italic_face;
 };
 
 typedef struct TextLine {
@@ -39,79 +48,154 @@ typedef struct GlyphPlacement {
     hb_position_t y;
 } GlyphPlacement;
 
-static bool open_font(CguiTextEngine *engine, const char *path, FT_Long face_index)
+static uint8_t g_gamma_lut[256];
+static bool g_gamma_initialized = false;
+
+static void init_gamma_lut(void)
 {
-    if (FT_New_Face(engine->library, path, face_index, &engine->face) == 0) {
-        return true;
+    if (g_gamma_initialized) {
+        return;
     }
-    return false;
+    for (int i = 0; i < 256; ++i) {
+        double linear = (double)i / 255.0;
+        /* Perceptual gamma correction (~1.35) matching display response to keep edges crisp */
+        double corrected = pow(linear, 1.0 / 1.35);
+        int val = (int)(corrected * 255.0 + 0.5);
+        if (val < 0) val = 0;
+        if (val > 255) val = 255;
+        g_gamma_lut[i] = (uint8_t)val;
+    }
+    g_gamma_initialized = true;
 }
 
-static bool open_system_font(CguiTextEngine *engine)
+static FT_Face load_face(FT_Library lib, const char *path, FT_Long face_index)
+{
+    FT_Face face = NULL;
+    if (FT_New_Face(lib, path, face_index, &face) == 0) {
+        return face;
+    }
+    return NULL;
+}
+
+#if defined(CGUI_HAVE_FONTCONFIG)
+static FT_Face query_fontconfig_face(FT_Library lib, const char *family, int weight, int slant)
+{
+    FcPattern *pattern = FcPatternCreate();
+    if (!pattern) {
+        return NULL;
+    }
+
+    FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family);
+    FcPatternAddInteger(pattern, FC_WEIGHT, weight);
+    FcPatternAddInteger(pattern, FC_SLANT, slant);
+    FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+
+    FcResult result;
+    FcPattern *match = FcFontMatch(NULL, pattern, &result);
+    FcPatternDestroy(pattern);
+    if (!match) {
+        return NULL;
+    }
+
+    FcChar8 *font_path = NULL;
+    int face_index = 0;
+    (void)FcPatternGetInteger(match, FC_INDEX, 0, &face_index);
+    FT_Face face = NULL;
+    if (FcPatternGetString(match, FC_FILE, 0, &font_path) == FcResultMatch && font_path) {
+        face = load_face(lib, (const char *)font_path, (FT_Long)face_index);
+    }
+    FcPatternDestroy(match);
+    return face;
+}
+#endif
+
+static bool open_system_fonts(CguiTextEngine *engine)
 {
 #ifdef __APPLE__
-    static const char *const candidates[] = {
+    static const char *const candidates_reg[] = {
         "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/SFNSText.ttf",
         "/System/Library/Fonts/SFNSRounded.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
         NULL,
     };
-    for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i], 0)) {
-            return true;
+    for (size_t i = 0; candidates_reg[i]; ++i) {
+        engine->face_regular = load_face(engine->library, candidates_reg[i], 0);
+        if (engine->face_regular) break;
+    }
+
+    static const char *const candidates_bold[] = {
+        "/System/Library/Fonts/SFNSBold.ttf",
+        "/System/Library/Fonts/SFNSTextBold.ttf",
+        NULL,
+    };
+    for (size_t i = 0; candidates_bold[i]; ++i) {
+        engine->face_bold = load_face(engine->library, candidates_bold[i], 0);
+        if (engine->face_bold) {
+            engine->has_bold_face = true;
+            break;
+        }
+    }
+
+    static const char *const candidates_it[] = {
+        "/System/Library/Fonts/SFNSItalic.ttf",
+        "/System/Library/Fonts/SFNSTextItalic.ttf",
+        NULL,
+    };
+    for (size_t i = 0; candidates_it[i]; ++i) {
+        engine->face_italic = load_face(engine->library, candidates_it[i], 0);
+        if (engine->face_italic) {
+            engine->has_italic_face = true;
+            break;
         }
     }
 #elif defined(_WIN32)
-    static const char *const candidates[] = {
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-        "C:\\Windows\\Fonts\\arial.ttf",
-        NULL,
-    };
-    for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i], 0)) {
-            return true;
-        }
+    engine->face_regular = load_face(engine->library, "C:\\Windows\\Fonts\\segoeui.ttf", 0);
+    if (!engine->face_regular) {
+        engine->face_regular = load_face(engine->library, "C:\\Windows\\Fonts\\arial.ttf", 0);
     }
+    engine->face_bold = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuib.ttf", 0);
+    if (engine->face_bold) engine->has_bold_face = true;
+    engine->face_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuii.ttf", 0);
+    if (engine->face_italic) engine->has_italic_face = true;
+    engine->face_bold_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuiz.ttf", 0);
+    if (engine->face_bold_italic) engine->has_bold_italic_face = true;
 #elif defined(CGUI_HAVE_FONTCONFIG)
     if (FcInit()) {
-        FcPattern *pattern = FcPatternCreate();
-        if (pattern) {
-            FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)"Inter");
-            FcConfigSubstitute(NULL, pattern, FcMatchPattern);
-            FcDefaultSubstitute(pattern);
+        engine->face_regular = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_REGULAR, FC_SLANT_ROMAN);
+        if (!engine->face_regular) {
+            engine->face_regular = query_fontconfig_face(engine->library, "sans-serif", FC_WEIGHT_REGULAR, FC_SLANT_ROMAN);
+        }
+        if (engine->face_regular) {
+            engine->face_bold = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_BOLD, FC_SLANT_ROMAN);
+            if (engine->face_bold) engine->has_bold_face = true;
 
-            FcResult result;
-            FcPattern *match = FcFontMatch(NULL, pattern, &result);
-            FcPatternDestroy(pattern);
-            if (match) {
-                FcChar8 *font_path = NULL;
-                int face_index = 0;
-                (void)FcPatternGetInteger(match, FC_INDEX, 0, &face_index);
-                bool found = FcPatternGetString(match, FC_FILE, 0, &font_path) == FcResultMatch &&
-                             font_path && open_font(engine, (const char *)font_path,
-                                                    (FT_Long)face_index);
-                FcPatternDestroy(match);
-                if (found) {
-                    return true;
-                }
+            engine->face_italic = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_REGULAR, FC_SLANT_ITALIC);
+            if (engine->face_italic) engine->has_italic_face = true;
+
+            engine->face_bold_italic = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_BOLD, FC_SLANT_ITALIC);
+            if (engine->face_bold_italic) engine->has_bold_italic_face = true;
+        }
+    }
+
+    if (!engine->face_regular) {
+        static const char *const candidates[] = {
+            "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            NULL,
+        };
+        for (size_t i = 0; candidates[i]; ++i) {
+            engine->face_regular = load_face(engine->library, candidates[i], 0);
+            if (engine->face_regular) {
+                break;
             }
         }
     }
-
-    static const char *const candidates[] = {
-        "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        NULL,
-    };
-    for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i], 0)) {
-            return true;
-        }
-    }
 #endif
-    return false;
+    return engine->face_regular != NULL;
 }
 
 CguiTextEngine *cgui_text_create(void)
@@ -128,10 +212,34 @@ CguiTextEngine *cgui_text_create(void)
         return NULL;
     }
 
+    /* Enable FreeType stem darkening for CFF, autofitter, and Type 1 engines (macOS-style) */
+    FT_Bool no_darkening = 0;
+    FT_Property_Set(engine->library, "cff", "no-stem-darkening", &no_darkening);
+    FT_Property_Set(engine->library, "autofitter", "no-stem-darkening", &no_darkening);
+    FT_Property_Set(engine->library, "type1", "no-stem-darkening", &no_darkening);
+
+    init_gamma_lut();
+
     const char *configured_path = getenv("CGUI_FONT");
-    bool font_opened = configured_path && configured_path[0]
-        ? open_font(engine, configured_path, 0)
-        : open_system_font(engine);
+    bool font_opened = false;
+    if (configured_path && configured_path[0]) {
+        engine->face_regular = load_face(engine->library, configured_path, 0);
+        font_opened = (engine->face_regular != NULL);
+
+        const char *conf_bold = getenv("CGUI_FONT_BOLD");
+        if (conf_bold && conf_bold[0]) {
+            engine->face_bold = load_face(engine->library, conf_bold, 0);
+            if (engine->face_bold) engine->has_bold_face = true;
+        }
+        const char *conf_it = getenv("CGUI_FONT_ITALIC");
+        if (conf_it && conf_it[0]) {
+            engine->face_italic = load_face(engine->library, conf_it, 0);
+            if (engine->face_italic) engine->has_italic_face = true;
+        }
+    } else {
+        font_opened = open_system_fonts(engine);
+    }
+
     if (!font_opened) {
         fprintf(stderr,
                 "cgui text: could not load a system sans-serif font; "
@@ -149,8 +257,19 @@ void cgui_text_destroy(CguiTextEngine *engine)
     if (!engine) {
         return;
     }
-    if (engine->face) {
-        FT_Done_Face(engine->face);
+    if (engine->face_bold_italic && engine->face_bold_italic != engine->face_regular &&
+        engine->face_bold_italic != engine->face_bold && engine->face_bold_italic != engine->face_italic) {
+        FT_Done_Face(engine->face_bold_italic);
+    }
+    if (engine->face_italic && engine->face_italic != engine->face_regular &&
+        engine->face_italic != engine->face_bold) {
+        FT_Done_Face(engine->face_italic);
+    }
+    if (engine->face_bold && engine->face_bold != engine->face_regular) {
+        FT_Done_Face(engine->face_bold);
+    }
+    if (engine->face_regular) {
+        FT_Done_Face(engine->face_regular);
     }
     if (engine->library) {
         FT_Done_FreeType(engine->library);
@@ -188,11 +307,14 @@ static bool shape_line(hb_font_t *font, const char *text, int length,
     int64_t min_x = 0;
     int64_t max_x = 0;
     for (unsigned int i = 0; i < count; ++i) {
+        hb_position_t gx = (hb_position_t)pen_x + positions[i].x_offset;
+        hb_position_t gy = (hb_position_t)pen_y + positions[i].y_offset;
         placements[i] = (GlyphPlacement) {
             .glyph = infos[i].codepoint,
-            .x = (hb_position_t)pen_x + positions[i].x_offset,
-            .y = (hb_position_t)pen_y + positions[i].y_offset,
+            .x = gx,
+            .y = gy,
         };
+        if (gx < min_x) min_x = gx;
         pen_x += positions[i].x_advance;
         pen_y += positions[i].y_advance;
         if (pen_x < min_x) min_x = pen_x;
@@ -229,11 +351,14 @@ static uint8_t bitmap_coverage(const FT_Bitmap *bitmap, unsigned int x, unsigned
     }
 }
 
-static void rasterize_line(CguiTextEngine *engine, hb_font_t *font,
+static void rasterize_line(CguiTextEngine *engine, FT_Face face, hb_font_t *font,
                            const TextLine *line, unsigned int line_index,
                            int line_min_advance, int ascender, int line_height,
-                           unsigned int output_width, uint8_t *output)
+                           uint32_t pixel_size, bool synth_bold, bool synth_italic,
+                           unsigned int output_width, unsigned int output_height,
+                           uint8_t *output)
 {
+    (void)engine;
     hb_buffer_t *buffer = NULL;
     GlyphPlacement *placements = NULL;
     unsigned int count = 0;
@@ -243,28 +368,63 @@ static void rasterize_line(CguiTextEngine *engine, hb_font_t *font,
         return;
     }
 
-    for (unsigned int i = 0; i < count; ++i) {
-        if (FT_Load_Glyph(engine->face, placements[i].glyph,
-                          FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT) != 0 ||
-            FT_Render_Glyph(engine->face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
-            continue;
-        }
+    /* Light hinting at small sizes for vertical grid alignment; unhinted at large sizes */
+    FT_Int32 load_flags = (pixel_size <= 24u)
+        ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)
+        : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING);
 
-        const FT_GlyphSlot glyph = engine->face->glyph;
-        const FT_Bitmap *bitmap = &glyph->bitmap;
-        if (!bitmap->buffer || bitmap->width == 0 || bitmap->rows == 0) {
+    for (unsigned int i = 0; i < count; ++i) {
+        if (FT_Load_Glyph(face, placements[i].glyph, load_flags | FT_LOAD_NO_BITMAP) != 0) {
             continue;
         }
 
         int pen_x = (int)floor((double)placements[i].x / 64.0);
         int pen_y = (int)floor((double)placements[i].y / 64.0);
+
+        if (face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
+            /* 1. Synthetic italic (oblique 12° shear) when no true italic face is available */
+            if (synth_italic) {
+                FT_GlyphSlot_Oblique(face->glyph);
+            }
+
+            /* 2. Synthetic bold or macOS-style stem dilation */
+            if (synth_bold) {
+                FT_GlyphSlot_Embolden(face->glyph);
+            } else {
+                /* Subtle stem dilation at small sizes to prevent washed-out text */
+                if (pixel_size <= 12u) {
+                    FT_Outline_EmboldenXY(&face->glyph->outline, 6, 2);
+                } else if (pixel_size <= 16u) {
+                    FT_Outline_EmboldenXY(&face->glyph->outline, 4, 2);
+                } else if (pixel_size <= 20u) {
+                    FT_Outline_EmboldenXY(&face->glyph->outline, 2, 0);
+                }
+            }
+
+            /* 3. Subpixel fractional translation for accurate letter spacing */
+            FT_Pos subpixel_x = (FT_Pos)(placements[i].x - (pen_x * 64));
+            if (subpixel_x != 0) {
+                FT_Outline_Translate(&face->glyph->outline, subpixel_x, 0);
+            }
+        }
+
+        if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
+            continue;
+        }
+
+        const FT_GlyphSlot glyph = face->glyph;
+        const FT_Bitmap *bitmap = &glyph->bitmap;
+        if (!bitmap->buffer || bitmap->width == 0 || bitmap->rows == 0) {
+            continue;
+        }
+
         int dst_x = CGUI_TEXT_HORIZONTAL_PADDING + pen_x - line_min_advance + glyph->bitmap_left;
         int line_top = (int)line_index * line_height;
         int dst_y = line_top + ascender - pen_y - glyph->bitmap_top;
 
         for (unsigned int gy = 0; gy < bitmap->rows; ++gy) {
             int y = dst_y + (int)gy;
-            if (y < line_top || y >= line_top + line_height) {
+            if (y < 0 || y >= (int)output_height) {
                 continue;
             }
             for (unsigned int gx = 0; gx < bitmap->width; ++gx) {
@@ -273,9 +433,18 @@ static void rasterize_line(CguiTextEngine *engine, hb_font_t *font,
                     continue;
                 }
                 size_t index = (size_t)y * output_width + (size_t)x;
-                uint8_t coverage = bitmap_coverage(bitmap, gx, gy);
-                if (coverage > output[index]) {
+                uint8_t raw = bitmap_coverage(bitmap, gx, gy);
+                if (raw == 0) {
+                    continue;
+                }
+                /* Gamma-corrected coverage to preserve crisp edges in sRGB */
+                uint8_t coverage = g_gamma_lut[raw];
+                uint8_t existing = output[index];
+                if (existing == 0) {
                     output[index] = coverage;
+                } else {
+                    /* Smooth alpha compositing for overlapping glyphs */
+                    output[index] = (uint8_t)(existing + coverage - ((existing * coverage) / 255u));
                 }
             }
         }
@@ -285,8 +454,9 @@ static void rasterize_line(CguiTextEngine *engine, hb_font_t *font,
     hb_buffer_destroy(buffer);
 }
 
-bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
-                     uint32_t pixel_size, CguiTextBitmap *out)
+bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
+                             uint32_t pixel_size, uint32_t style_flags,
+                             CguiTextBitmap *out)
 {
     if (!engine || !utf8 || !out || pixel_size == 0 || pixel_size > 512u) {
         return false;
@@ -298,17 +468,67 @@ bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
         fprintf(stderr, "cgui text: text is too long to render\n");
         return false;
     }
-    if (FT_Set_Pixel_Sizes(engine->face, 0, pixel_size) != 0) {
+
+    /* Choose appropriate font face and determine if synthetic bold/italic is needed */
+    FT_Face face = engine->face_regular;
+    bool synth_bold = false;
+    bool synth_italic = false;
+
+    bool want_bold = (style_flags & CGUI_TEXT_BOLD) != 0;
+    bool want_italic = (style_flags & CGUI_TEXT_ITALIC) != 0;
+
+    if (want_bold && want_italic) {
+        if (engine->has_bold_italic_face && engine->face_bold_italic) {
+            face = engine->face_bold_italic;
+        } else if (engine->has_bold_face && engine->face_bold) {
+            face = engine->face_bold;
+            synth_italic = true;
+        } else if (engine->has_italic_face && engine->face_italic) {
+            face = engine->face_italic;
+            synth_bold = true;
+        } else {
+            face = engine->face_regular;
+            synth_bold = true;
+            synth_italic = true;
+        }
+    } else if (want_bold) {
+        if (engine->has_bold_face && engine->face_bold) {
+            face = engine->face_bold;
+        } else {
+            face = engine->face_regular;
+            synth_bold = true;
+        }
+    } else if (want_italic) {
+        if (engine->has_italic_face && engine->face_italic) {
+            face = engine->face_italic;
+        } else {
+            face = engine->face_regular;
+            synth_italic = true;
+        }
+    }
+
+    if (!face) {
+        face = engine->face_regular;
+    }
+    if (!face) {
+        return false;
+    }
+
+    if (FT_Set_Pixel_Sizes(face, 0, pixel_size) != 0) {
         fprintf(stderr, "cgui text: font does not support %u px\n", pixel_size);
         return false;
     }
 
-    hb_font_t *font = hb_ft_font_create_referenced(engine->face);
+    FT_Int32 load_flags = (pixel_size <= 24u)
+        ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)
+        : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING);
+
+    hb_font_t *font = hb_ft_font_create_referenced(face);
     if (!font) {
         fprintf(stderr, "cgui text: HarfBuzz font creation failed\n");
         return false;
     }
-    hb_ft_font_set_load_flags(font, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT);
+    hb_ft_font_set_load_flags(font, load_flags);
 
     size_t line_count = 1;
     for (size_t i = 0; i < text_length; ++i) {
@@ -367,12 +587,30 @@ bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
         ++end;
     }
 
-    int ascender = (int)ceil((double)engine->face->size->metrics.ascender / 64.0);
-    int line_height = (int)ceil((double)engine->face->size->metrics.height / 64.0);
+    int ascender = (int)ceil((double)face->size->metrics.ascender / 64.0);
+    int line_height = (int)ceil((double)face->size->metrics.height / 64.0);
     if (line_height < (int)pixel_size) {
         line_height = (int)pixel_size;
     }
-    uint64_t width = (uint64_t)max_width + 2u * CGUI_TEXT_HORIZONTAL_PADDING;
+
+    /* Use true font bounding box so tall accented glyphs and descenders are never clipped */
+    if (face->units_per_EM > 0) {
+        double em_scale = (double)face->size->metrics.y_ppem / (double)face->units_per_EM;
+        int font_yMax = (int)ceil((double)face->bbox.yMax * em_scale);
+        int font_yMin = (int)floor((double)face->bbox.yMin * em_scale);
+        if (font_yMax > ascender) {
+            ascender = font_yMax;
+        }
+        int font_span = font_yMax - font_yMin;
+        if (font_span > line_height) {
+            line_height = font_span;
+        }
+    }
+
+    /* Extra padding for synthetic italic slant and synthetic bold expansion */
+    int extra_pad = (synth_italic ? (int)ceil(0.25 * (double)pixel_size) : 0) +
+                    (synth_bold ? (int)ceil(0.10 * (double)pixel_size) : 0);
+    uint64_t width = (uint64_t)max_width + 2u * (CGUI_TEXT_HORIZONTAL_PADDING + (uint64_t)extra_pad);
     uint64_t height = (uint64_t)line_count * (uint64_t)line_height;
     if (!ok || width == 0 || width > CGUI_TEXT_MAX_PIXELS ||
         height == 0 || height > CGUI_TEXT_MAX_PIXELS) {
@@ -396,14 +634,21 @@ bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
     out->height = (uint32_t)height;
 
     for (size_t i = 0; i < line_count; ++i) {
-        rasterize_line(engine, font, &lines[i], (unsigned int)i,
+        rasterize_line(engine, face, font, &lines[i], (unsigned int)i,
                        lines[i].min_advance, ascender, line_height,
-                       out->width, out->alpha);
+                       pixel_size, synth_bold, synth_italic,
+                       out->width, out->height, out->alpha);
     }
 
     free(lines);
     hb_font_destroy(font);
     return true;
+}
+
+bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
+                     uint32_t pixel_size, CguiTextBitmap *out)
+{
+    return cgui_text_render_styled(engine, utf8, pixel_size, CGUI_TEXT_REGULAR, out);
 }
 
 void cgui_text_bitmap_destroy(CguiTextBitmap *bitmap)

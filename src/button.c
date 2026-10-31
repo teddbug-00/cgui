@@ -41,9 +41,10 @@ void button_draw(Widget *self, struct VkContext *vk)
     vk_draw_style_box(g_draw, b->x, b->y, b->w, b->h, &style);
 
     if (btn->label && btn->label[0] != '\0') {
-        (void)vk_draw_text_centered(g_draw, btn->label,
-                                    b->x, b->y, b->w, b->h,
-                                    style.text_size, style.text_color);
+        (void)vk_draw_text_centered_styled(g_draw, btn->label,
+                                           b->x, b->y, b->w, b->h,
+                                           style.text_size, style.text_style,
+                                           style.text_color);
     }
 
     for (size_t i = 0; i < self->child_count; ++i) {

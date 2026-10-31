@@ -92,7 +92,9 @@ void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
 
 /**
  * Draw UTF-8 text from its top-left, using antialiased system-font glyphs.
- * A draw context caches up to 256 distinct text/size combinations.
+ * Coordinates are automatically snapped to integer physical pixels to guarantee
+ * 1:1 texel-to-pixel mapping and eliminate linear interpolation blur.
+ * A draw context caches up to 256 distinct text/size/style combinations.
  */
 bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
                   float pixel_size, const uint8_t rgba[4]);
@@ -101,5 +103,14 @@ bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
 bool vk_draw_text_centered(VkDraw *d, const char *utf8,
                            float x, float y, float w, float h,
                            float pixel_size, const uint8_t rgba[4]);
+
+bool vk_draw_text_styled(VkDraw *d, const char *utf8, float x, float y,
+                         float pixel_size, uint32_t style_flags,
+                         const uint8_t rgba[4]);
+
+bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
+                                  float x, float y, float w, float h,
+                                  float pixel_size, uint32_t style_flags,
+                                  const uint8_t rgba[4]);
 
 #endif /* VK_DRAW_H */

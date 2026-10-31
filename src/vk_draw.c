@@ -15,6 +15,7 @@
 typedef struct VkTextTexture {
     char *utf8;
     uint32_t pixel_size;
+    uint32_t style_flags;
     uint32_t width;
     uint32_t height;
     VkImage image;
@@ -322,11 +323,13 @@ cleanup:
 }
 
 static VkTextTexture *get_text_texture(VkDraw *d, const char *utf8,
-                                      uint32_t pixel_size)
+                                       uint32_t pixel_size, uint32_t style_flags)
 {
     VkTextTexture *cache = d->text_cache;
     for (size_t i = 0; i < d->text_cache_count; ++i) {
-        if (cache[i].pixel_size == pixel_size && strcmp(cache[i].utf8, utf8) == 0) {
+        if (cache[i].pixel_size == pixel_size &&
+            cache[i].style_flags == style_flags &&
+            strcmp(cache[i].utf8, utf8) == 0) {
             return &cache[i];
         }
     }
@@ -340,12 +343,13 @@ static VkTextTexture *get_text_texture(VkDraw *d, const char *utf8,
     }
 
     CguiTextBitmap bitmap = {0};
-    if (!cgui_text_render(d->text_engine, utf8, pixel_size, &bitmap)) {
+    if (!cgui_text_render_styled(d->text_engine, utf8, pixel_size, style_flags, &bitmap)) {
         return NULL;
     }
 
     VkTextTexture texture = {
         .pixel_size = pixel_size,
+        .style_flags = style_flags,
         .width = bitmap.width,
         .height = bitmap.height,
     };
@@ -1089,7 +1093,8 @@ void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
 }
 
 static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
-                         float pixel_size, const uint8_t rgba[4], bool centered,
+                         float pixel_size, uint32_t style_flags,
+                         const uint8_t rgba[4], bool centered,
                          float box_w, float box_h)
 {
     if (!d || !d->ctx || !d->ctx->frame_open || !utf8 || !rgba ||
@@ -1104,7 +1109,7 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
     if (raster_size == 0) {
         return false;
     }
-    VkTextTexture *texture = get_text_texture(d, utf8, raster_size);
+    VkTextTexture *texture = get_text_texture(d, utf8, raster_size, style_flags);
     if (!texture) {
         return false;
     }
@@ -1113,6 +1118,10 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
         x += (box_w - (float)texture->width) * 0.5f;
         y += (box_h - (float)texture->height) * 0.5f;
     }
+
+    /* Snap to integer physical pixels to guarantee 1:1 texel-to-pixel mapping */
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
 
     VkContext *ctx = d->ctx;
     VkCommandBuffer cmd = ctx->active_cmd;
@@ -1152,14 +1161,29 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
 bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
                   float pixel_size, const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, rgba, false, 0.0f, 0.0f);
+    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, false, 0.0f, 0.0f);
 }
 
 bool vk_draw_text_centered(VkDraw *d, const char *utf8,
                            float x, float y, float w, float h,
                            float pixel_size, const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, rgba, true, w, h);
+    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, true, w, h);
+}
+
+bool vk_draw_text_styled(VkDraw *d, const char *utf8, float x, float y,
+                         float pixel_size, uint32_t style_flags,
+                         const uint8_t rgba[4])
+{
+    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, false, 0.0f, 0.0f);
+}
+
+bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
+                                  float x, float y, float w, float h,
+                                  float pixel_size, uint32_t style_flags,
+                                  const uint8_t rgba[4])
+{
+    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, true, w, h);
 }
 
 /* Mask pipeline global set from create */

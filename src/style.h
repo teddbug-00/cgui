@@ -28,8 +28,9 @@ typedef struct Style {
     uint8_t shadow_color[4];
 
     /* Text (used only by text-bearing widgets) */
-    float   text_size;
-    uint8_t text_color[4];
+    float    text_size;
+    uint8_t  text_color[4];
+    uint32_t text_style;        /* 0 = regular, 1 = bold, 2 = italic, 3 = bold+italic */
 } Style;
 
 /** Clean macOS-ish default (white card, soft shadow, 10 px radius). */
