@@ -26,6 +26,7 @@ typedef struct Style {
     float   shadow_offset_y;
     float   shadow_blur;
     uint8_t shadow_color[4];
+    uint32_t shadow_mode;       /* 0 = analytical SDF (ultra-fast single pass), 1 = offscreen Gaussian blur */
 
     /* Text (used only by text-bearing widgets) */
     float    text_size;

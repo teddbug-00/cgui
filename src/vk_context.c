@@ -223,20 +223,8 @@ static bool create_swapchain(VkContext *ctx)
     free(formats);
     ctx->swapchain_format = chosen_fmt.format;
 
-    /* Present mode – prefer MAILBOX, else FIFO (always available) */
-    uint32_t pm_count = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(ctx->physical_device, ctx->surface, &pm_count, NULL);
-    VkPresentModeKHR *pmodes = calloc(pm_count, sizeof(VkPresentModeKHR));
-    vkGetPhysicalDeviceSurfacePresentModesKHR(ctx->physical_device, ctx->surface, &pm_count, pmodes);
-
+    /* Present mode – prefer FIFO (standard VSync for tear-free, display-synchronized frame pacing) */
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (uint32_t i = 0; i < pm_count; ++i) {
-        if (pmodes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-    }
-    free(pmodes);
 
     /* Extent */
     if (caps.currentExtent.width != UINT32_MAX) {

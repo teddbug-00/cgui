@@ -171,10 +171,13 @@ void toggle_update(Toggle *t, float dt)
     }
 
     /* Move anim_t toward target at ANIM_SPEED per second. */
-    if (t->anim_t < target)
+    if (t->anim_t < target) {
         t->anim_t += ANIM_SPEED * dt;
-    else
+        if (t->anim_t > target) t->anim_t = target;
+    } else {
         t->anim_t -= ANIM_SPEED * dt;
+        if (t->anim_t < target) t->anim_t = target;
+    }
 
     t->anim_t = clamp01(t->anim_t);
 }
