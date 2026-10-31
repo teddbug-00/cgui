@@ -12,6 +12,7 @@
 #define VK_DRAW_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "vk_context.h"
@@ -59,6 +60,11 @@ typedef struct VkDraw {
     VkRenderPass   offscreen_pass;  /* clear/load colour */
     uint32_t       offscreen_w;
     uint32_t       offscreen_h;
+
+    /* Text rasterizer and bounded cache of uploaded alpha-mask textures. */
+    void          *text_engine;
+    void          *text_cache;
+    size_t         text_cache_count;
 } VkDraw;
 
 typedef struct VkDrawShaders {
@@ -83,5 +89,17 @@ void vk_draw_rounded_rect(VkDraw *d,
 
 void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
                        const Style *s);
+
+/**
+ * Draw UTF-8 text from its top-left, using antialiased system-font glyphs.
+ * A draw context caches up to 256 distinct text/size combinations.
+ */
+bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
+                  float pixel_size, const uint8_t rgba[4]);
+
+/** Draw UTF-8 text centered within the supplied rectangle. */
+bool vk_draw_text_centered(VkDraw *d, const char *utf8,
+                           float x, float y, float w, float h,
+                           float pixel_size, const uint8_t rgba[4]);
 
 #endif /* VK_DRAW_H */

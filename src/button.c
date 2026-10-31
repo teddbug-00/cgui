@@ -40,8 +40,11 @@ void button_draw(Widget *self, struct VkContext *vk)
     const Rect *b = &self->bounds;
     vk_draw_style_box(g_draw, b->x, b->y, b->w, b->h, &style);
 
-    /* Text rendering comes later – label is stored for the next step. */
-    (void)btn->label;
+    if (btn->label && btn->label[0] != '\0') {
+        (void)vk_draw_text_centered(g_draw, btn->label,
+                                    b->x, b->y, b->w, b->h,
+                                    style.text_size, style.text_color);
+    }
 
     for (size_t i = 0; i < self->child_count; ++i) {
         Widget *child = self->children[i];

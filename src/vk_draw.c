@@ -3,11 +3,25 @@
  */
 
 #include "vk_draw.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+
+#define CGUI_TEXT_CACHE_CAPACITY 256u
+
+typedef struct VkTextTexture {
+    char *utf8;
+    uint32_t pixel_size;
+    uint32_t width;
+    uint32_t height;
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkDescriptorSet descriptor;
+} VkTextTexture;
 
 /* Mask pipeline (offscreen SDF) – set in vk_draw_create */
 VkPipeline cgui_mask_pipeline = VK_NULL_HANDLE;
@@ -64,6 +78,331 @@ static uint32_t find_memory_type(VkPhysicalDevice phys, uint32_t type_bits, VkMe
         }
     }
     return 0;
+}
+
+static bool find_memory_type_checked(VkPhysicalDevice phys, uint32_t type_bits,
+                                     VkMemoryPropertyFlags flags, uint32_t *index_out)
+{
+    VkPhysicalDeviceMemoryProperties props;
+    vkGetPhysicalDeviceMemoryProperties(phys, &props);
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        if ((type_bits & (1u << i)) &&
+            (props.memoryTypes[i].propertyFlags & flags) == flags) {
+            *index_out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void destroy_text_texture(VkDevice dev, VkTextTexture *texture)
+{
+    if (!texture) {
+        return;
+    }
+    if (texture->view) vkDestroyImageView(dev, texture->view, NULL);
+    if (texture->image) vkDestroyImage(dev, texture->image, NULL);
+    if (texture->memory) vkFreeMemory(dev, texture->memory, NULL);
+    free(texture->utf8);
+    memset(texture, 0, sizeof(*texture));
+}
+
+static bool create_text_image(VkDraw *d, const CguiTextBitmap *bitmap,
+                              VkImage *image_out, VkDeviceMemory *memory_out,
+                              VkImageView *view_out)
+{
+    VkContext *ctx = d->ctx;
+    VkDevice dev = ctx->device;
+    size_t pixel_count = (size_t)bitmap->width * bitmap->height;
+    if (!bitmap->alpha || !bitmap->width || !bitmap->height ||
+        pixel_count > SIZE_MAX / 4u) {
+        return false;
+    }
+
+    uint8_t *rgba = malloc(pixel_count * 4u);
+    if (!rgba) {
+        return false;
+    }
+    for (size_t i = 0; i < pixel_count; ++i) {
+        rgba[i * 4u + 0u] = 255u;
+        rgba[i * 4u + 1u] = 255u;
+        rgba[i * 4u + 2u] = 255u;
+        rgba[i * 4u + 3u] = bitmap->alpha[i];
+    }
+
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    bool ok = false;
+    size_t byte_count = pixel_count * 4u;
+
+    VkBufferCreateInfo bci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = byte_count,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(dev, &bci, NULL, &staging) != VK_SUCCESS) {
+        goto cleanup;
+    }
+
+    VkMemoryRequirements staging_req;
+    vkGetBufferMemoryRequirements(dev, staging, &staging_req);
+    uint32_t staging_type;
+    if (!find_memory_type_checked(ctx->physical_device, staging_req.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  &staging_type)) {
+        fprintf(stderr, "cgui text: no coherent host-visible Vulkan memory type\n");
+        goto cleanup;
+    }
+    VkMemoryAllocateInfo staging_ai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = staging_req.size,
+        .memoryTypeIndex = staging_type,
+    };
+    if (vkAllocateMemory(dev, &staging_ai, NULL, &staging_memory) != VK_SUCCESS ||
+        vkBindBufferMemory(dev, staging, staging_memory, 0) != VK_SUCCESS) {
+        goto cleanup;
+    }
+    void *mapped = NULL;
+    if (vkMapMemory(dev, staging_memory, 0, byte_count, 0, &mapped) != VK_SUCCESS) {
+        goto cleanup;
+    }
+    memcpy(mapped, rgba, byte_count);
+    vkUnmapMemory(dev, staging_memory);
+
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = { bitmap->width, bitmap->height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev, &ici, NULL, image_out) != VK_SUCCESS) {
+        goto cleanup;
+    }
+
+    VkMemoryRequirements image_req;
+    vkGetImageMemoryRequirements(dev, *image_out, &image_req);
+    uint32_t image_type;
+    if (!find_memory_type_checked(ctx->physical_device, image_req.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &image_type) &&
+        !find_memory_type_checked(ctx->physical_device, image_req.memoryTypeBits, 0,
+                                  &image_type)) {
+        fprintf(stderr, "cgui text: no compatible Vulkan image memory type\n");
+        goto cleanup;
+    }
+    VkMemoryAllocateInfo image_ai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = image_req.size,
+        .memoryTypeIndex = image_type,
+    };
+    if (vkAllocateMemory(dev, &image_ai, NULL, memory_out) != VK_SUCCESS ||
+        vkBindImageMemory(dev, *image_out, *memory_out, 0) != VK_SUCCESS) {
+        goto cleanup;
+    }
+
+    VkImageViewCreateInfo view_ci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = *image_out,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    if (vkCreateImageView(dev, &view_ci, NULL, view_out) != VK_SUCCESS) {
+        goto cleanup;
+    }
+
+    VkCommandBufferAllocateInfo command_ai = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = ctx->command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (vkAllocateCommandBuffers(dev, &command_ai, &cmd) != VK_SUCCESS) {
+        goto cleanup;
+    }
+    VkCommandBufferBeginInfo begin = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+        goto cleanup;
+    }
+
+    VkImageMemoryBarrier to_transfer = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = *image_out,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, NULL, 0, NULL, 1, &to_transfer);
+
+    VkBufferImageCopy copy = {
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .layerCount = 1,
+        },
+        .imageExtent = { bitmap->width, bitmap->height, 1 },
+    };
+    vkCmdCopyBufferToImage(cmd, staging, *image_out,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+    VkImageMemoryBarrier to_shader = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = *image_out,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                         0, NULL, 0, NULL, 1, &to_shader);
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        goto cleanup;
+    }
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    };
+    if (vkQueueSubmit(ctx->graphics_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+        vkQueueWaitIdle(ctx->graphics_queue) != VK_SUCCESS) {
+        goto cleanup;
+    }
+    ok = true;
+
+cleanup:
+    if (cmd) {
+        vkFreeCommandBuffers(dev, ctx->command_pool, 1, &cmd);
+    }
+    if (staging) vkDestroyBuffer(dev, staging, NULL);
+    if (staging_memory) vkFreeMemory(dev, staging_memory, NULL);
+    free(rgba);
+    if (!ok) {
+        if (*view_out) vkDestroyImageView(dev, *view_out, NULL);
+        if (*image_out) vkDestroyImage(dev, *image_out, NULL);
+        if (*memory_out) vkFreeMemory(dev, *memory_out, NULL);
+        *view_out = VK_NULL_HANDLE;
+        *image_out = VK_NULL_HANDLE;
+        *memory_out = VK_NULL_HANDLE;
+    }
+    return ok;
+}
+
+static VkTextTexture *get_text_texture(VkDraw *d, const char *utf8,
+                                      uint32_t pixel_size)
+{
+    VkTextTexture *cache = d->text_cache;
+    for (size_t i = 0; i < d->text_cache_count; ++i) {
+        if (cache[i].pixel_size == pixel_size && strcmp(cache[i].utf8, utf8) == 0) {
+            return &cache[i];
+        }
+    }
+
+    if (d->text_cache_count >= CGUI_TEXT_CACHE_CAPACITY) {
+        fprintf(stderr,
+                "cgui text: texture cache is full (%u unique labels); "
+                "destroy and recreate the draw context to clear it\n",
+                CGUI_TEXT_CACHE_CAPACITY);
+        return NULL;
+    }
+
+    CguiTextBitmap bitmap = {0};
+    if (!cgui_text_render(d->text_engine, utf8, pixel_size, &bitmap)) {
+        return NULL;
+    }
+
+    VkTextTexture texture = {
+        .pixel_size = pixel_size,
+        .width = bitmap.width,
+        .height = bitmap.height,
+    };
+    size_t text_length = strlen(utf8);
+    texture.utf8 = malloc(text_length + 1u);
+    if (!texture.utf8) {
+        cgui_text_bitmap_destroy(&bitmap);
+        return NULL;
+    }
+    memcpy(texture.utf8, utf8, text_length + 1u);
+
+    bool resume_pass = d->ctx->frame_open;
+    if (resume_pass) {
+        vk_context_suspend_pass(d->ctx);
+    }
+    bool uploaded = create_text_image(d, &bitmap, &texture.image,
+                                      &texture.memory, &texture.view);
+    if (resume_pass) {
+        vk_context_resume_pass(d->ctx);
+    }
+    cgui_text_bitmap_destroy(&bitmap);
+    if (!uploaded) {
+        destroy_text_texture(d->ctx->device, &texture);
+        fprintf(stderr, "cgui text: Vulkan texture upload failed\n");
+        return NULL;
+    }
+
+    VkDescriptorSetAllocateInfo alloc = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = d->blur_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &d->blit_set_layout,
+    };
+    if (vkAllocateDescriptorSets(d->ctx->device, &alloc,
+                                 &texture.descriptor) != VK_SUCCESS) {
+        destroy_text_texture(d->ctx->device, &texture);
+        fprintf(stderr, "cgui text: failed to allocate a texture descriptor\n");
+        return NULL;
+    }
+
+    VkDescriptorImageInfo image_info = {
+        .sampler = d->sampler,
+        .imageView = texture.view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = texture.descriptor,
+        .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &image_info,
+    };
+    vkUpdateDescriptorSets(d->ctx->device, 1, &write, 0, NULL);
+
+    cache[d->text_cache_count] = texture;
+    return &cache[d->text_cache_count++];
 }
 
 static bool create_color_target(VkDraw *d, uint32_t w, uint32_t h,
@@ -353,6 +692,14 @@ bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *sh)
 
     if (!create_offscreen_pass(out)) return false;
 
+    out->text_engine = cgui_text_create();
+    out->text_cache = calloc(CGUI_TEXT_CACHE_CAPACITY, sizeof(VkTextTexture));
+    if (!out->text_engine || !out->text_cache) {
+        fprintf(stderr, "cgui text: failed to initialize the text renderer\n");
+        vk_draw_destroy(out);
+        return false;
+    }
+
     out->rr_vert   = create_module(dev, sh->rr_vert, sh->rr_vert_n);
     out->rr_frag   = create_module(dev, sh->rr_frag, sh->rr_frag_n);
     out->blur_vert = create_module(dev, sh->blur_vert, sh->blur_vert_n);
@@ -393,11 +740,11 @@ bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *sh)
 
     VkDescriptorPoolSize pool_size = {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 8,
+        .descriptorCount = CGUI_TEXT_CACHE_CAPACITY + 3u,
     };
     VkDescriptorPoolCreateInfo dpci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 8,
+        .maxSets = CGUI_TEXT_CACHE_CAPACITY + 3u,
         .poolSizeCount = 1,
         .pPoolSizes = &pool_size,
     };
@@ -492,6 +839,16 @@ void vk_draw_destroy(VkDraw *d)
     if (!dev) { memset(d, 0, sizeof(*d)); return; }
 
     vkDeviceWaitIdle(dev);
+    VkTextTexture *text_cache = d->text_cache;
+    for (size_t i = 0; i < d->text_cache_count; ++i) {
+        destroy_text_texture(dev, &text_cache[i]);
+    }
+    free(d->text_cache);
+    d->text_cache = NULL;
+    d->text_cache_count = 0;
+    cgui_text_destroy(d->text_engine);
+    d->text_engine = NULL;
+
     destroy_color_target(dev, &d->mask_image, &d->mask_memory, &d->mask_view, &d->mask_fb);
     destroy_color_target(dev, &d->temp_image, &d->temp_memory, &d->temp_view, &d->temp_fb);
 
@@ -729,6 +1086,80 @@ void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
     }
 
     vk_draw_rounded_rect(d, x, y, w, h, s->corner_radius, 1.25f, s->bg);
+}
+
+static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
+                         float pixel_size, const uint8_t rgba[4], bool centered,
+                         float box_w, float box_h)
+{
+    if (!d || !d->ctx || !d->ctx->frame_open || !utf8 || !rgba ||
+        !isfinite(pixel_size) || pixel_size <= 0.0f || pixel_size > 512.0f) {
+        return false;
+    }
+    if (utf8[0] == '\0') {
+        return true;
+    }
+
+    uint32_t raster_size = (uint32_t)floorf(pixel_size + 0.5f);
+    if (raster_size == 0) {
+        return false;
+    }
+    VkTextTexture *texture = get_text_texture(d, utf8, raster_size);
+    if (!texture) {
+        return false;
+    }
+
+    if (centered) {
+        x += (box_w - (float)texture->width) * 0.5f;
+        y += (box_h - (float)texture->height) * 0.5f;
+    }
+
+    VkContext *ctx = d->ctx;
+    VkCommandBuffer cmd = ctx->active_cmd;
+    VkViewport viewport = {
+        .width = (float)ctx->swapchain_extent.width,
+        .height = (float)ctx->swapchain_extent.height,
+        .maxDepth = 1.0f,
+    };
+    VkRect2D scissor = { .extent = ctx->swapchain_extent };
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->blit_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            d->blit_layout, 0, 1, &texture->descriptor, 0, NULL);
+
+    BlitPush push = {
+        .rect = { x, y, (float)texture->width, (float)texture->height },
+        .color = {
+            rgba[0] / 255.0f,
+            rgba[1] / 255.0f,
+            rgba[2] / 255.0f,
+            rgba[3] / 255.0f,
+        },
+        .screen = {
+            (float)ctx->swapchain_extent.width,
+            (float)ctx->swapchain_extent.height,
+        },
+        .uv_scale = { 1.0f, 1.0f },
+    };
+    vkCmdPushConstants(cmd, d->blit_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(push), &push);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
+    return true;
+}
+
+bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
+                  float pixel_size, const uint8_t rgba[4])
+{
+    return draw_text_at(d, utf8, x, y, pixel_size, rgba, false, 0.0f, 0.0f);
+}
+
+bool vk_draw_text_centered(VkDraw *d, const char *utf8,
+                           float x, float y, float w, float h,
+                           float pixel_size, const uint8_t rgba[4])
+{
+    return draw_text_at(d, utf8, x, y, pixel_size, rgba, true, w, h);
 }
 
 /* Mask pipeline global set from create */

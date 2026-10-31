@@ -15,6 +15,12 @@ cc = meson.get_compiler('c')
 
 sdl3_dep   = dependency('sdl3', required: true, fallback: ['sdl3', 'sdl3_dep'])
 vulkan_dep = dependency('vulkan', required: true)
+freetype_dep = dependency('freetype2', required: true)
+harfbuzz_dep = dependency('harfbuzz', required: true)
+fontconfig_dep = dependency('fontconfig', required: host_machine.system() == 'linux')
+if fontconfig_dep.found()
+  add_project_arguments('-DCGUI_HAVE_FONTCONFIG=1', language: 'c')
+endif
 m_dep      = cc.find_library('m', required: true)
 
 glslang = find_program('glslangValidator', 'glslang', required: true)
@@ -44,6 +50,7 @@ sources = files(
   'src/main.c',
   'src/gui.c',
   'src/style.c',
+  'src/text.c',
   'src/panel.c',
   'src/button.c',
   'src/vk_context.c',
@@ -56,6 +63,14 @@ executable(
   sources,
   spv_targets,
   include_directories: include_directories('src'),
-  dependencies: [sdl3_dep, vulkan_dep, m_dep],
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
   install: false,
 )
+
+text_test = executable(
+  'cgui-text-test',
+  ['tests/text_test.c', 'src/text.c'],
+  include_directories: include_directories('src'),
+  dependencies: [freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('text-rasterization', text_test)

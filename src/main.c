@@ -152,6 +152,8 @@ int main(int argc, char **argv)
     Style btn_style = style_default();
     btn_style.corner_radius   = 8.0f;
     btn_style.bg[0] = 0; btn_style.bg[1] = 122; btn_style.bg[2] = 255; btn_style.bg[3] = 255;
+    btn_style.text_color[0] = 255; btn_style.text_color[1] = 255;
+    btn_style.text_color[2] = 255; btn_style.text_color[3] = 255;
     btn_style.border_width    = 0.0f;
     btn_style.shadow_offset_y = 2.0f;
     btn_style.shadow_blur     = 8.0f;
