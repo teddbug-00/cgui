@@ -1,5 +1,5 @@
 .POSIX:
-.PHONY: all debug release test check clean setup
+.PHONY: all debug release test check bench clean setup
 
 all:
 	@echo "Building Debug and Release in parallel..."
@@ -19,6 +19,10 @@ test:
 	@meson test -C build-release
 
 check: test
+
+bench: release
+	@echo "--- Running Release Performance Benchmarks (-O3 -flto) ---"
+	@./build-release/cgui-bench
 
 clean:
 	@ninja -C build clean 2>/dev/null || true
