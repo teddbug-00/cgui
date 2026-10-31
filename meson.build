@@ -53,6 +53,7 @@ sources = files(
   'src/text.c',
   'src/panel.c',
   'src/button.c',
+  'src/label.c',
   'src/vk_context.c',
   'src/vk_draw.c',
   'src/spv_loader.c',
@@ -74,3 +75,11 @@ text_test = executable(
   dependencies: [freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
 test('text-rasterization', text_test)
+
+label_test = executable(
+  'cgui-label-test',
+  ['tests/label_test.c', 'src/label.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('label-widget', label_test)

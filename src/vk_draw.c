@@ -1094,8 +1094,8 @@ void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
 
 static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
                          float pixel_size, uint32_t style_flags,
-                         const uint8_t rgba[4], bool centered,
-                         float box_w, float box_h)
+                         const uint8_t rgba[4], CguiTextAlign align,
+                         bool align_box, float box_w, float box_h)
 {
     if (!d || !d->ctx || !d->ctx->frame_open || !utf8 || !rgba ||
         !isfinite(pixel_size) || pixel_size <= 0.0f || pixel_size > 512.0f) {
@@ -1114,8 +1114,12 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
         return false;
     }
 
-    if (centered) {
-        x += (box_w - (float)texture->width) * 0.5f;
+    if (align_box) {
+        if (align == CGUI_ALIGN_CENTER) {
+            x += (box_w - (float)texture->width) * 0.5f;
+        } else if (align == CGUI_ALIGN_RIGHT) {
+            x += (box_w - (float)texture->width);
+        }
         y += (box_h - (float)texture->height) * 0.5f;
     }
 
@@ -1161,21 +1165,21 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
 bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
                   float pixel_size, const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, false, 0.0f, 0.0f);
+    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, CGUI_ALIGN_LEFT, false, 0.0f, 0.0f);
 }
 
 bool vk_draw_text_centered(VkDraw *d, const char *utf8,
                            float x, float y, float w, float h,
                            float pixel_size, const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, true, w, h);
+    return draw_text_at(d, utf8, x, y, pixel_size, 0, rgba, CGUI_ALIGN_CENTER, true, w, h);
 }
 
 bool vk_draw_text_styled(VkDraw *d, const char *utf8, float x, float y,
                          float pixel_size, uint32_t style_flags,
                          const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, false, 0.0f, 0.0f);
+    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, CGUI_ALIGN_LEFT, false, 0.0f, 0.0f);
 }
 
 bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
@@ -1183,7 +1187,35 @@ bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
                                   float pixel_size, uint32_t style_flags,
                                   const uint8_t rgba[4])
 {
-    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, true, w, h);
+    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, CGUI_ALIGN_CENTER, true, w, h);
+}
+
+bool vk_draw_text_aligned_styled(VkDraw *d, const char *utf8,
+                                 float x, float y, float w, float h,
+                                 float pixel_size, uint32_t style_flags,
+                                 const uint8_t rgba[4], CguiTextAlign align)
+{
+    return draw_text_at(d, utf8, x, y, pixel_size, style_flags, rgba, align, true, w, h);
+}
+
+bool vk_draw_measure_text(VkDraw *d, const char *utf8,
+                          float pixel_size, uint32_t style_flags,
+                          float *w_out, float *h_out)
+{
+    if (!d || !utf8 || pixel_size <= 0.0f || !w_out || !h_out) {
+        return false;
+    }
+    uint32_t raster_size = (uint32_t)floorf(pixel_size + 0.5f);
+    if (raster_size == 0) {
+        return false;
+    }
+    VkTextTexture *texture = get_text_texture(d, utf8, raster_size, style_flags);
+    if (!texture) {
+        return false;
+    }
+    *w_out = (float)texture->width;
+    *h_out = (float)texture->height;
+    return true;
 }
 
 /* Mask pipeline global set from create */

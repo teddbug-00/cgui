@@ -90,6 +90,12 @@ void vk_draw_rounded_rect(VkDraw *d,
 void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
                        const Style *s);
 
+typedef enum CguiTextAlign {
+    CGUI_ALIGN_LEFT   = 0,
+    CGUI_ALIGN_CENTER = 1,
+    CGUI_ALIGN_RIGHT  = 2,
+} CguiTextAlign;
+
 /**
  * Draw UTF-8 text from its top-left, using antialiased system-font glyphs.
  * Coordinates are automatically snapped to integer physical pixels to guarantee
@@ -112,5 +118,15 @@ bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
                                   float x, float y, float w, float h,
                                   float pixel_size, uint32_t style_flags,
                                   const uint8_t rgba[4]);
+
+bool vk_draw_text_aligned_styled(VkDraw *d, const char *utf8,
+                                 float x, float y, float w, float h,
+                                 float pixel_size, uint32_t style_flags,
+                                 const uint8_t rgba[4], CguiTextAlign align);
+
+/** Query cached width and height of rendered text. */
+bool vk_draw_measure_text(VkDraw *d, const char *utf8,
+                          float pixel_size, uint32_t style_flags,
+                          float *w_out, float *h_out);
 
 #endif /* VK_DRAW_H */

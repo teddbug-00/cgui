@@ -15,7 +15,7 @@
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-static void vk_check(VkResult res, const char *msg)
+static inline void vk_check(VkResult res, const char *msg)
 {
     if (res != VK_SUCCESS) {
         fprintf(stderr, "Vulkan error (%d): %s\n", (int)res, msg);

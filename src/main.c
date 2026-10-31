@@ -10,8 +10,10 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include "gui.h"
+#include "text.h"
 #include "panel.h"
 #include "button.h"
+#include "label.h"
 #include "vk_context.h"
 #include "vk_draw.h"
 #include "spv_loader.h"
@@ -129,6 +131,7 @@ int main(int argc, char **argv)
 
     panel_set_draw_context(&app.draw);
     button_set_draw_context(&app.draw);
+    label_set_draw_context(&app.draw);
 
     app.root = widget_create();
     if (!app.root) return 1;
@@ -137,10 +140,10 @@ int main(int argc, char **argv)
 
     /* ---- Panel card ---- */
     Style card_style = style_default();
-    card_style.corner_radius   = 12.0f;
-    card_style.shadow_offset_y = 8.0f;
-    card_style.shadow_blur     = 24.0f;
-    card_style.shadow_color[3] = 60;
+    card_style.corner_radius   = 16.0f;
+    card_style.shadow_offset_y = 10.0f;
+    card_style.shadow_blur     = 28.0f;
+    card_style.shadow_color[3] = 55;
 
     Rect card_box = { 440.0f, 220.0f, 400.0f, 320.0f };
     Panel *card = panel_create(card_box, card_style);
@@ -148,9 +151,41 @@ int main(int argc, char **argv)
         widget_add_child(app.root, (Widget *)card);
     }
 
+    /* ---- Card Title (Bold Header) ---- */
+    Style title_style = style_default();
+    title_style.text_size     = 22.0f;
+    title_style.text_style    = CGUI_TEXT_BOLD;
+    title_style.text_color[0] = 28; title_style.text_color[1] = 28;
+    title_style.text_color[2] = 30; title_style.text_color[3] = 255;
+    title_style.bg[3]         = 0;
+    title_style.border_width  = 0.0f;
+    title_style.shadow_color[3] = 0;
+
+    Rect title_box = { 470.0f, 260.0f, 340.0f, 32.0f };
+    Label *title = label_create(title_box, title_style, "macOS Design");
+    if (title) {
+        widget_add_child(app.root, (Widget *)title);
+    }
+
+    /* ---- Card Description (Muted Subheading) ---- */
+    Style desc_style = style_default();
+    desc_style.text_size     = 14.0f;
+    desc_style.text_style    = CGUI_TEXT_REGULAR;
+    desc_style.text_color[0] = 120; desc_style.text_color[1] = 120;
+    desc_style.text_color[2] = 128; desc_style.text_color[3] = 255;
+    desc_style.bg[3]         = 0;
+    desc_style.border_width  = 0.0f;
+    desc_style.shadow_color[3] = 0;
+
+    Rect desc_box = { 470.0f, 295.0f, 340.0f, 24.0f };
+    Label *desc = label_create(desc_box, desc_style, "Clean Vulkan UI with crisp typography");
+    if (desc) {
+        widget_add_child(app.root, (Widget *)desc);
+    }
+
     /* ---- Button on the card ---- */
     Style btn_style = style_default();
-    btn_style.corner_radius   = 8.0f;
+    btn_style.corner_radius   = 10.0f;
     btn_style.bg[0] = 0; btn_style.bg[1] = 122; btn_style.bg[2] = 255; btn_style.bg[3] = 255;
     btn_style.text_color[0] = 255; btn_style.text_color[1] = 255;
     btn_style.text_color[2] = 255; btn_style.text_color[3] = 255;
@@ -160,7 +195,7 @@ int main(int argc, char **argv)
     btn_style.shadow_color[3] = 40;
 
     /* Position relative to window (card is at 440,220 – place button inside) */
-    Rect btn_box = { 540.0f, 400.0f, 200.0f, 40.0f };
+    Rect btn_box = { 470.0f, 440.0f, 340.0f, 44.0f };
     Button *btn = button_create(btn_box, btn_style, "Click me");
     if (btn) {
         uint8_t hover[4] = { 10, 132, 255, 255 };
