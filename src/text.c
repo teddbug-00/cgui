@@ -39,9 +39,9 @@ typedef struct GlyphPlacement {
     hb_position_t y;
 } GlyphPlacement;
 
-static bool open_font(CguiTextEngine *engine, const char *path)
+static bool open_font(CguiTextEngine *engine, const char *path, FT_Long face_index)
 {
-    if (FT_New_Face(engine->library, path, 0, &engine->face) == 0) {
+    if (FT_New_Face(engine->library, path, face_index, &engine->face) == 0) {
         return true;
     }
     return false;
@@ -57,7 +57,7 @@ static bool open_system_font(CguiTextEngine *engine)
         NULL,
     };
     for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i])) {
+        if (open_font(engine, candidates[i], 0)) {
             return true;
         }
     }
@@ -68,7 +68,7 @@ static bool open_system_font(CguiTextEngine *engine)
         NULL,
     };
     for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i])) {
+        if (open_font(engine, candidates[i], 0)) {
             return true;
         }
     }
@@ -85,8 +85,11 @@ static bool open_system_font(CguiTextEngine *engine)
             FcPatternDestroy(pattern);
             if (match) {
                 FcChar8 *font_path = NULL;
+                int face_index = 0;
+                (void)FcPatternGetInteger(match, FC_INDEX, 0, &face_index);
                 bool found = FcPatternGetString(match, FC_FILE, 0, &font_path) == FcResultMatch &&
-                             font_path && open_font(engine, (const char *)font_path);
+                             font_path && open_font(engine, (const char *)font_path,
+                                                    (FT_Long)face_index);
                 FcPatternDestroy(match);
                 if (found) {
                     return true;
@@ -103,7 +106,7 @@ static bool open_system_font(CguiTextEngine *engine)
         NULL,
     };
     for (size_t i = 0; candidates[i]; ++i) {
-        if (open_font(engine, candidates[i])) {
+        if (open_font(engine, candidates[i], 0)) {
             return true;
         }
     }
@@ -127,7 +130,7 @@ CguiTextEngine *cgui_text_create(void)
 
     const char *configured_path = getenv("CGUI_FONT");
     bool font_opened = configured_path && configured_path[0]
-        ? open_font(engine, configured_path)
+        ? open_font(engine, configured_path, 0)
         : open_system_font(engine);
     if (!font_opened) {
         fprintf(stderr,
@@ -241,7 +244,8 @@ static void rasterize_line(CguiTextEngine *engine, hb_font_t *font,
     }
 
     for (unsigned int i = 0; i < count; ++i) {
-        if (FT_Load_Glyph(engine->face, placements[i].glyph, FT_LOAD_DEFAULT) != 0 ||
+        if (FT_Load_Glyph(engine->face, placements[i].glyph,
+                          FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT) != 0 ||
             FT_Render_Glyph(engine->face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
             continue;
         }
@@ -304,6 +308,7 @@ bool cgui_text_render(CguiTextEngine *engine, const char *utf8,
         fprintf(stderr, "cgui text: HarfBuzz font creation failed\n");
         return false;
     }
+    hb_ft_font_set_load_flags(font, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT);
 
     size_t line_count = 1;
     for (size_t i = 0; i < text_length; ++i) {

@@ -1,6 +1,6 @@
 [nix]
 channel = "stable-25_05"
-packages = ["meson", "ninja", "pkg-config", "glslang", "vulkan-headers", "vulkan-loader", "freetype", "harfbuzz", "dejavu_fonts", "sdl3", "fontconfig"]
+packages = ["meson", "ninja", "pkg-config", "glslang", "vulkan-headers", "vulkan-loader", "freetype", "harfbuzz", "dejavu_fonts", "sdl3", "fontconfig", "inter"]
 
 [agent]
 expertMode = true

@@ -13,6 +13,17 @@ static size_t count_ink(const CguiTextBitmap *bitmap)
     return count;
 }
 
+static int has_antialiased_edge(const CguiTextBitmap *bitmap)
+{
+    size_t pixels = (size_t)bitmap->width * bitmap->height;
+    for (size_t i = 0; i < pixels; ++i) {
+        if (bitmap->alpha[i] > 0 && bitmap->alpha[i] < 255) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int render_text(CguiTextEngine *engine, const char *text,
                        uint32_t size, CguiTextBitmap *bitmap)
 {
@@ -46,7 +57,8 @@ int main(void)
     failed |= render_text(engine, "First line\nSecond line", 16, &multiline);
     failed |= render_text(engine, "", 16, &empty);
 
-    if (!failed && (count_ink(&latin) == 0 || count_ink(&utf8) == 0)) {
+    if (!failed && (count_ink(&latin) == 0 || count_ink(&utf8) == 0 ||
+                    !has_antialiased_edge(&latin))) {
         fprintf(stderr, "UTF-8 text did not produce antialiased glyph coverage\n");
         failed = 1;
     }

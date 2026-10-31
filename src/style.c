@@ -20,7 +20,7 @@ Style style_default(void)
         .shadow_blur     = 14.0f,
         .shadow_color    = { 0, 0, 0, 50 },
 
-        .text_size       = 13.0f,
-        .text_color      = { 0, 0, 0, 255 },
+        .text_size       = 14.0f,
+        .text_color      = { 29, 29, 31, 255 },
     };
 }
