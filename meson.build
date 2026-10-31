@@ -54,6 +54,7 @@ sources = files(
   'src/panel.c',
   'src/button.c',
   'src/label.c',
+  'src/toggle.c',
   'src/vk_context.c',
   'src/vk_draw.c',
   'src/spv_loader.c',
@@ -83,3 +84,11 @@ label_test = executable(
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
 test('label-widget', label_test)
+
+toggle_test = executable(
+  'cgui-toggle-test',
+  ['tests/toggle_test.c', 'src/toggle.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('toggle-widget', toggle_test)
