@@ -28,6 +28,7 @@
 #include "button.h"
 #include "label.h"
 #include "toggle.h"
+#include "slider.h"
 
 /* ------------------------------------------------------------------ */
 /* High-resolution timer helpers                                       */
@@ -204,6 +205,20 @@ static void bench_widget_lifecycle(void)
         print_bench_result("Toggle Create + Destroy", iters, elapsed);
     }
 
+    /* Slider creation */
+    {
+        uint64_t iters = 100000;
+        Style s = style_default();
+        Rect r = { 0, 0, 200, 28 };
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            Slider *sl = slider_create(r, s, 0.0f, 100.0f, 50.0f);
+            widget_destroy((Widget *)sl);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("Slider Create + Destroy", iters, elapsed);
+    }
+
     /* Deep Scene Graph: 1 Panel with 100 child widgets */
     {
         uint64_t iters = 2000;
@@ -256,6 +271,34 @@ static void bench_events_and_animation(void)
         uint64_t elapsed = get_time_ns() - start;
         print_bench_result("Event Dispatch (50 widgets hierarchy)", iters, elapsed);
         widget_destroy(root);
+    }
+
+    /* Slider interactive dragging (event processing + value snapping) */
+    {
+        uint64_t iters = 100000;
+        Rect r = { 10.0f, 10.0f, 300.0f, 28.0f };
+        Slider *sl = slider_create(r, style_default(), 0.0f, 100.0f, 0.0f);
+
+        SDL_Event down_ev = {0};
+        down_ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        down_ev.button.button = SDL_BUTTON_LEFT;
+        down_ev.button.x = 10.0f;
+        down_ev.button.y = 20.0f;
+        sl->base.handle_event((Widget *)sl, &down_ev);
+
+        SDL_Event move_ev = {0};
+        move_ev.type = SDL_EVENT_MOUSE_MOTION;
+        move_ev.motion.y = 20.0f;
+
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            move_ev.motion.x = 10.0f + (float)(i % 300);
+            sl->base.handle_event((Widget *)sl, &move_ev);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("Slider Drag Event Stream", iters, elapsed);
+
+        widget_destroy((Widget *)sl);
     }
 
     /* High-density Animation: 5,000 animated toggle switches updated simultaneously */

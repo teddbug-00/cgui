@@ -15,6 +15,7 @@
 #include "button.h"
 #include "label.h"
 #include "toggle.h"
+#include "slider.h"
 #include "vk_context.h"
 #include "vk_draw.h"
 #include "spv_loader.h"
@@ -60,6 +61,13 @@ static void on_toggle_change(Toggle *self, bool is_on, void *userdata)
     (void)self;
     (void)userdata;
     printf("Toggle switched: %s\n", is_on ? "ON" : "OFF");
+}
+
+static void on_slider_change(Slider *self, float val, void *userdata)
+{
+    (void)self;
+    (void)userdata;
+    printf("Brightness level: %.0f%%\n", val);
 }
 
 static bool load_spv_candidates(const char **paths, uint32_t **words, size_t *count)
@@ -141,6 +149,7 @@ int main(int argc, char **argv)
     button_set_draw_context(&app.draw);
     label_set_draw_context(&app.draw);
     toggle_set_draw_context(&app.draw);
+    slider_set_draw_context(&app.draw);
 
     app.root = widget_create();
     if (!app.root) return 1;
@@ -154,7 +163,7 @@ int main(int argc, char **argv)
     card_style.shadow_blur     = 28.0f;
     card_style.shadow_color[3] = 55;
 
-    Rect card_box = { 440.0f, 200.0f, 400.0f, 360.0f };
+    Rect card_box = { 440.0f, 160.0f, 400.0f, 440.0f };
     Panel *card = panel_create(card_box, card_style);
     if (card) {
         widget_add_child(app.root, (Widget *)card);
@@ -170,7 +179,7 @@ int main(int argc, char **argv)
     title_style.border_width  = 0.0f;
     title_style.shadow_color[3] = 0;
 
-    Rect title_box = { 470.0f, 235.0f, 340.0f, 32.0f };
+    Rect title_box = { 470.0f, 195.0f, 340.0f, 32.0f };
     Label *title = label_create(title_box, title_style, "macOS Design");
     if (title) {
         widget_add_child(app.root, (Widget *)title);
@@ -186,7 +195,7 @@ int main(int argc, char **argv)
     desc_style.border_width  = 0.0f;
     desc_style.shadow_color[3] = 0;
 
-    Rect desc_box = { 470.0f, 270.0f, 340.0f, 24.0f };
+    Rect desc_box = { 470.0f, 230.0f, 340.0f, 24.0f };
     Label *desc = label_create(desc_box, desc_style, "Clean Vulkan UI with crisp typography");
     if (desc) {
         widget_add_child(app.root, (Widget *)desc);
@@ -202,17 +211,40 @@ int main(int argc, char **argv)
     toggle_lbl_style.border_width  = 0.0f;
     toggle_lbl_style.shadow_color[3] = 0;
 
-    Rect toggle_lbl_box = { 470.0f, 340.0f, 260.0f, 31.0f };
+    Rect toggle_lbl_box = { 470.0f, 280.0f, 260.0f, 31.0f };
     Label *toggle_lbl = label_create(toggle_lbl_box, toggle_lbl_style, "Hardware Acceleration");
     if (toggle_lbl) {
         widget_add_child(app.root, (Widget *)toggle_lbl);
     }
 
-    Rect toggle_box = { 759.0f, 340.0f, 51.0f, 31.0f };
+    Rect toggle_box = { 759.0f, 280.0f, 51.0f, 31.0f };
     Toggle *toggle = toggle_create(toggle_box, style_default(), true);
     if (toggle) {
         toggle_set_change_handler(toggle, on_toggle_change, NULL);
         widget_add_child(app.root, (Widget *)toggle);
+    }
+
+    /* ---- Slider Row (Brightness label + slider) ---- */
+    Style slider_lbl_style = style_default();
+    slider_lbl_style.text_size     = 14.0f;
+    slider_lbl_style.text_style    = CGUI_TEXT_REGULAR;
+    slider_lbl_style.text_color[0] = 40; slider_lbl_style.text_color[1] = 40;
+    slider_lbl_style.text_color[2] = 45; slider_lbl_style.text_color[3] = 255;
+    slider_lbl_style.bg[3]         = 0;
+    slider_lbl_style.border_width  = 0.0f;
+    slider_lbl_style.shadow_color[3] = 0;
+
+    Rect slider_lbl_box = { 470.0f, 335.0f, 340.0f, 20.0f };
+    Label *slider_lbl = label_create(slider_lbl_box, slider_lbl_style, "Display Brightness");
+    if (slider_lbl) {
+        widget_add_child(app.root, (Widget *)slider_lbl);
+    }
+
+    Rect slider_box = { 470.0f, 365.0f, 340.0f, 28.0f };
+    Slider *slider = slider_create(slider_box, style_default(), 0.0f, 100.0f, 75.0f);
+    if (slider) {
+        slider_set_change_handler(slider, on_slider_change, NULL);
+        widget_add_child(app.root, (Widget *)slider);
     }
 
     /* ---- Button on the card ---- */
@@ -226,8 +258,7 @@ int main(int argc, char **argv)
     btn_style.shadow_blur     = 8.0f;
     btn_style.shadow_color[3] = 40;
 
-    /* Position relative to window (card is at 440,200 – place button inside) */
-    Rect btn_box = { 470.0f, 440.0f, 340.0f, 44.0f };
+    Rect btn_box = { 470.0f, 435.0f, 340.0f, 44.0f };
     Button *btn = button_create(btn_box, btn_style, "Click me");
     if (btn) {
         uint8_t hover[4] = { 10, 132, 255, 255 };
