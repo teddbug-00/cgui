@@ -87,4 +87,11 @@ void vk_context_suspend_pass(VkContext *ctx);
 /** Resume main pass with LOAD so previous content is kept. */
 void vk_context_resume_pass(VkContext *ctx);
 
+/**
+ * Allocate, begin, and return a one-shot command buffer for CPU→GPU transfers.
+ * Call vk_context_end_one_shot() to submit and wait.
+ */
+VkCommandBuffer vk_context_begin_one_shot(VkContext *ctx);
+bool            vk_context_end_one_shot(VkContext *ctx, VkCommandBuffer cmd);
+
 #endif /* VK_CONTEXT_H */

@@ -709,3 +709,47 @@ void vk_context_resume_pass(VkContext *ctx)
     vkCmdBeginRenderPass(ctx->active_cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
     ctx->frame_open = true;
 }
+
+VkCommandBuffer vk_context_begin_one_shot(VkContext *ctx)
+{
+    if (!ctx) return VK_NULL_HANDLE;
+
+    VkCommandBufferAllocateInfo ai = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = ctx->command_pool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(ctx->device, &ai, &cmd) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &cmd);
+        return VK_NULL_HANDLE;
+    }
+    return cmd;
+}
+
+bool vk_context_end_one_shot(VkContext *ctx, VkCommandBuffer cmd)
+{
+    if (!ctx || cmd == VK_NULL_HANDLE) return false;
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &cmd);
+        return false;
+    }
+    VkSubmitInfo si = {
+        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers    = &cmd,
+    };
+    bool ok = (vkQueueSubmit(ctx->graphics_queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS &&
+               vkQueueWaitIdle(ctx->graphics_queue) == VK_SUCCESS);
+    vkFreeCommandBuffers(ctx->device, ctx->command_pool, 1, &cmd);
+    return ok;
+}

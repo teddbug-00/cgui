@@ -153,6 +153,32 @@ static void bench_text_rendering(CguiTextEngine *engine)
         uint64_t elapsed = get_time_ns() - start;
         print_bench_result("Rasterize Large Title (48px Bold)", iters, elapsed);
     }
+
+    /* Fast HarfBuzz shaping (per-frame real-time text layout with cached glyph atlas) */
+    {
+        uint64_t iters = 100000;
+        uint64_t start = get_time_ns();
+        CguiShapedGlyph buf[64];
+        uint32_t count = 0;
+        float total_w = 0.0f;
+        for (uint64_t i = 0; i < iters; ++i) {
+            cgui_text_shape(engine, short_str, 16, CGUI_TEXT_REGULAR, buf, 64, &count, &total_w, NULL, NULL);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("HarfBuzz Shape Short Label (8 chars)", iters, elapsed);
+    }
+    {
+        uint64_t iters = 50000;
+        uint64_t start = get_time_ns();
+        CguiShapedGlyph buf[128];
+        uint32_t count = 0;
+        float total_w = 0.0f;
+        for (uint64_t i = 0; i < iters; ++i) {
+            cgui_text_shape(engine, med_str, 14, CGUI_TEXT_REGULAR, buf, 128, &count, &total_w, NULL, NULL);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("HarfBuzz Shape Medium Line (43 chars)", iters, elapsed);
+    }
 }
 
 /* ------------------------------------------------------------------ */

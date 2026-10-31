@@ -61,10 +61,21 @@ typedef struct VkDraw {
     uint32_t       offscreen_w;
     uint32_t       offscreen_h;
 
-    /* Text rasterizer and bounded cache of uploaded alpha-mask textures. */
+    /* Text layout and shaping engine */
     void          *text_engine;
-    void          *text_cache;
-    size_t         text_cache_count;
+
+    /* GPU glyph atlas (replaces per-string VkImage uploads for text) */
+    void          *glyph_atlas;       /* CguiGlyphAtlas* */
+
+    /* Atlas text pipeline */
+    VkShaderModule        txt_vert;
+    VkShaderModule        txt_frag;
+    VkPipelineLayout      txt_layout;
+    VkPipeline            txt_pipeline;
+    VkDescriptorSetLayout txt_set_layout;
+    VkDescriptorPool      txt_pool;
+    VkDescriptorSet       txt_set;    /* bound to atlas image */
+    VkSampler             txt_sampler;
 } VkDraw;
 
 typedef struct VkDrawShaders {
@@ -74,6 +85,8 @@ typedef struct VkDrawShaders {
     const uint32_t *blur_frag; size_t blur_frag_n;
     const uint32_t *blit_vert; size_t blit_vert_n;
     const uint32_t *blit_frag; size_t blit_frag_n;
+    const uint32_t *txt_vert;  size_t txt_vert_n;
+    const uint32_t *txt_frag;  size_t txt_frag_n;
 } VkDrawShaders;
 
 bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *shaders);
@@ -97,10 +110,10 @@ typedef enum CguiTextAlign {
 } CguiTextAlign;
 
 /**
- * Draw UTF-8 text from its top-left, using antialiased system-font glyphs.
- * Coordinates are automatically snapped to integer physical pixels to guarantee
- * 1:1 texel-to-pixel mapping and eliminate linear interpolation blur.
- * A draw context caches up to 256 distinct text/size/style combinations.
+ * Draw UTF-8 text from its top-left, using the GPU glyph atlas.
+ * Each unique glyph is rasterized once into a 2048×2048 R8 atlas texture;
+ * subsequent frames draw only textured quads from the atlas with no CPU
+ * rasterization or Vulkan allocation overhead.
  */
 bool vk_draw_text(VkDraw *d, const char *utf8, float x, float y,
                   float pixel_size, const uint8_t rgba[4]);

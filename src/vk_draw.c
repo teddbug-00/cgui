@@ -4,25 +4,12 @@
 
 #include "vk_draw.h"
 #include "text.h"
+#include "glyph_atlas.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-
-#define CGUI_TEXT_CACHE_CAPACITY 256u
-
-typedef struct VkTextTexture {
-    char *utf8;
-    uint32_t pixel_size;
-    uint32_t style_flags;
-    uint32_t width;
-    uint32_t height;
-    VkImage image;
-    VkDeviceMemory memory;
-    VkImageView view;
-    VkDescriptorSet descriptor;
-} VkTextTexture;
 
 /* Mask pipeline (offscreen SDF) – set in vk_draw_create */
 VkPipeline cgui_mask_pipeline = VK_NULL_HANDLE;
@@ -50,6 +37,14 @@ typedef struct BlitPush {
     float uv_rect[4];
     float screen[2];
 } BlitPush;
+
+/* Text atlas push constants (must match text.vert / text.frag) */
+typedef struct TextPush {
+    float rect[4];     /* (x, y, w, h) in screen pixels */
+    float color[4];    /* RGBA [0,1] */
+    float uv_rect[4];  /* (u0, v0, u_w, v_h) into atlas */
+    float screen[2];   /* (screen_w, screen_h) */
+} TextPush;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -81,333 +76,7 @@ static uint32_t find_memory_type(VkPhysicalDevice phys, uint32_t type_bits, VkMe
     return 0;
 }
 
-static bool find_memory_type_checked(VkPhysicalDevice phys, uint32_t type_bits,
-                                     VkMemoryPropertyFlags flags, uint32_t *index_out)
-{
-    VkPhysicalDeviceMemoryProperties props;
-    vkGetPhysicalDeviceMemoryProperties(phys, &props);
-    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
-        if ((type_bits & (1u << i)) &&
-            (props.memoryTypes[i].propertyFlags & flags) == flags) {
-            *index_out = i;
-            return true;
-        }
-    }
-    return false;
-}
 
-static void destroy_text_texture(VkDevice dev, VkTextTexture *texture)
-{
-    if (!texture) {
-        return;
-    }
-    if (texture->view) vkDestroyImageView(dev, texture->view, NULL);
-    if (texture->image) vkDestroyImage(dev, texture->image, NULL);
-    if (texture->memory) vkFreeMemory(dev, texture->memory, NULL);
-    free(texture->utf8);
-    memset(texture, 0, sizeof(*texture));
-}
-
-static bool create_text_image(VkDraw *d, const CguiTextBitmap *bitmap,
-                              VkImage *image_out, VkDeviceMemory *memory_out,
-                              VkImageView *view_out)
-{
-    VkContext *ctx = d->ctx;
-    VkDevice dev = ctx->device;
-    size_t pixel_count = (size_t)bitmap->width * bitmap->height;
-    if (!bitmap->alpha || !bitmap->width || !bitmap->height ||
-        pixel_count > SIZE_MAX / 4u) {
-        return false;
-    }
-
-    uint8_t *rgba = malloc(pixel_count * 4u);
-    if (!rgba) {
-        return false;
-    }
-    for (size_t i = 0; i < pixel_count; ++i) {
-        rgba[i * 4u + 0u] = 255u;
-        rgba[i * 4u + 1u] = 255u;
-        rgba[i * 4u + 2u] = 255u;
-        rgba[i * 4u + 3u] = bitmap->alpha[i];
-    }
-
-    VkBuffer staging = VK_NULL_HANDLE;
-    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    bool ok = false;
-    size_t byte_count = pixel_count * 4u;
-
-    VkBufferCreateInfo bci = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = byte_count,
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    if (vkCreateBuffer(dev, &bci, NULL, &staging) != VK_SUCCESS) {
-        goto cleanup;
-    }
-
-    VkMemoryRequirements staging_req;
-    vkGetBufferMemoryRequirements(dev, staging, &staging_req);
-    uint32_t staging_type;
-    if (!find_memory_type_checked(ctx->physical_device, staging_req.memoryTypeBits,
-                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                  &staging_type)) {
-        fprintf(stderr, "cgui text: no coherent host-visible Vulkan memory type\n");
-        goto cleanup;
-    }
-    VkMemoryAllocateInfo staging_ai = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = staging_req.size,
-        .memoryTypeIndex = staging_type,
-    };
-    if (vkAllocateMemory(dev, &staging_ai, NULL, &staging_memory) != VK_SUCCESS ||
-        vkBindBufferMemory(dev, staging, staging_memory, 0) != VK_SUCCESS) {
-        goto cleanup;
-    }
-    void *mapped = NULL;
-    if (vkMapMemory(dev, staging_memory, 0, byte_count, 0, &mapped) != VK_SUCCESS) {
-        goto cleanup;
-    }
-    memcpy(mapped, rgba, byte_count);
-    vkUnmapMemory(dev, staging_memory);
-
-    VkImageCreateInfo ici = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
-        .extent = { bitmap->width, bitmap->height, 1 },
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    if (vkCreateImage(dev, &ici, NULL, image_out) != VK_SUCCESS) {
-        goto cleanup;
-    }
-
-    VkMemoryRequirements image_req;
-    vkGetImageMemoryRequirements(dev, *image_out, &image_req);
-    uint32_t image_type;
-    if (!find_memory_type_checked(ctx->physical_device, image_req.memoryTypeBits,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &image_type) &&
-        !find_memory_type_checked(ctx->physical_device, image_req.memoryTypeBits, 0,
-                                  &image_type)) {
-        fprintf(stderr, "cgui text: no compatible Vulkan image memory type\n");
-        goto cleanup;
-    }
-    VkMemoryAllocateInfo image_ai = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = image_req.size,
-        .memoryTypeIndex = image_type,
-    };
-    if (vkAllocateMemory(dev, &image_ai, NULL, memory_out) != VK_SUCCESS ||
-        vkBindImageMemory(dev, *image_out, *memory_out, 0) != VK_SUCCESS) {
-        goto cleanup;
-    }
-
-    VkImageViewCreateInfo view_ci = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = *image_out,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-    if (vkCreateImageView(dev, &view_ci, NULL, view_out) != VK_SUCCESS) {
-        goto cleanup;
-    }
-
-    VkCommandBufferAllocateInfo command_ai = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = ctx->command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    if (vkAllocateCommandBuffers(dev, &command_ai, &cmd) != VK_SUCCESS) {
-        goto cleanup;
-    }
-    VkCommandBufferBeginInfo begin = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
-        goto cleanup;
-    }
-
-    VkImageMemoryBarrier to_transfer = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = *image_out,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &to_transfer);
-
-    VkBufferImageCopy copy = {
-        .imageSubresource = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .layerCount = 1,
-        },
-        .imageExtent = { bitmap->width, bitmap->height, 1 },
-    };
-    vkCmdCopyBufferToImage(cmd, staging, *image_out,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-
-    VkImageMemoryBarrier to_shader = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = *image_out,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                         0, NULL, 0, NULL, 1, &to_shader);
-
-    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-        goto cleanup;
-    }
-    VkSubmitInfo submit = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &cmd,
-    };
-    if (vkQueueSubmit(ctx->graphics_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
-        vkQueueWaitIdle(ctx->graphics_queue) != VK_SUCCESS) {
-        goto cleanup;
-    }
-    ok = true;
-
-cleanup:
-    if (cmd) {
-        vkFreeCommandBuffers(dev, ctx->command_pool, 1, &cmd);
-    }
-    if (staging) vkDestroyBuffer(dev, staging, NULL);
-    if (staging_memory) vkFreeMemory(dev, staging_memory, NULL);
-    free(rgba);
-    if (!ok) {
-        if (*view_out) vkDestroyImageView(dev, *view_out, NULL);
-        if (*image_out) vkDestroyImage(dev, *image_out, NULL);
-        if (*memory_out) vkFreeMemory(dev, *memory_out, NULL);
-        *view_out = VK_NULL_HANDLE;
-        *image_out = VK_NULL_HANDLE;
-        *memory_out = VK_NULL_HANDLE;
-    }
-    return ok;
-}
-
-static VkTextTexture *get_text_texture(VkDraw *d, const char *utf8,
-                                       uint32_t pixel_size, uint32_t style_flags)
-{
-    VkTextTexture *cache = d->text_cache;
-    for (size_t i = 0; i < d->text_cache_count; ++i) {
-        if (cache[i].pixel_size == pixel_size &&
-            cache[i].style_flags == style_flags &&
-            strcmp(cache[i].utf8, utf8) == 0) {
-            return &cache[i];
-        }
-    }
-
-    if (d->text_cache_count >= CGUI_TEXT_CACHE_CAPACITY) {
-        fprintf(stderr,
-                "cgui text: texture cache is full (%u unique labels); "
-                "destroy and recreate the draw context to clear it\n",
-                CGUI_TEXT_CACHE_CAPACITY);
-        return NULL;
-    }
-
-    CguiTextBitmap bitmap = {0};
-    if (!cgui_text_render_styled(d->text_engine, utf8, pixel_size, style_flags, &bitmap)) {
-        return NULL;
-    }
-
-    VkTextTexture texture = {
-        .pixel_size = pixel_size,
-        .style_flags = style_flags,
-        .width = bitmap.width,
-        .height = bitmap.height,
-    };
-    size_t text_length = strlen(utf8);
-    texture.utf8 = malloc(text_length + 1u);
-    if (!texture.utf8) {
-        cgui_text_bitmap_destroy(&bitmap);
-        return NULL;
-    }
-    memcpy(texture.utf8, utf8, text_length + 1u);
-
-    bool resume_pass = d->ctx->frame_open;
-    if (resume_pass) {
-        vk_context_suspend_pass(d->ctx);
-    }
-    bool uploaded = create_text_image(d, &bitmap, &texture.image,
-                                      &texture.memory, &texture.view);
-    if (resume_pass) {
-        vk_context_resume_pass(d->ctx);
-    }
-    cgui_text_bitmap_destroy(&bitmap);
-    if (!uploaded) {
-        destroy_text_texture(d->ctx->device, &texture);
-        fprintf(stderr, "cgui text: Vulkan texture upload failed\n");
-        return NULL;
-    }
-
-    VkDescriptorSetAllocateInfo alloc = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = d->blur_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &d->blit_set_layout,
-    };
-    if (vkAllocateDescriptorSets(d->ctx->device, &alloc,
-                                 &texture.descriptor) != VK_SUCCESS) {
-        destroy_text_texture(d->ctx->device, &texture);
-        fprintf(stderr, "cgui text: failed to allocate a texture descriptor\n");
-        return NULL;
-    }
-
-    VkDescriptorImageInfo image_info = {
-        .sampler = d->sampler,
-        .imageView = texture.view,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-    VkWriteDescriptorSet write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = texture.descriptor,
-        .dstBinding = 0,
-        .descriptorCount = 1,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .pImageInfo = &image_info,
-    };
-    vkUpdateDescriptorSets(d->ctx->device, 1, &write, 0, NULL);
-
-    cache[d->text_cache_count] = texture;
-    return &cache[d->text_cache_count++];
-}
 
 static bool create_color_target(VkDraw *d, uint32_t w, uint32_t h,
                                 VkImage *image, VkDeviceMemory *memory,
@@ -697,8 +366,7 @@ bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *sh)
     if (!create_offscreen_pass(out)) return false;
 
     out->text_engine = cgui_text_create();
-    out->text_cache = calloc(CGUI_TEXT_CACHE_CAPACITY, sizeof(VkTextTexture));
-    if (!out->text_engine || !out->text_cache) {
+    if (!out->text_engine) {
         fprintf(stderr, "cgui text: failed to initialize the text renderer\n");
         vk_draw_destroy(out);
         return false;
@@ -744,11 +412,11 @@ bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *sh)
 
     VkDescriptorPoolSize pool_size = {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = CGUI_TEXT_CACHE_CAPACITY + 3u,
+        .descriptorCount = 3u,
     };
     VkDescriptorPoolCreateInfo dpci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = CGUI_TEXT_CACHE_CAPACITY + 3u,
+        .maxSets = 3u,
         .poolSizeCount = 1,
         .pPoolSizes = &pool_size,
     };
@@ -832,7 +500,160 @@ bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *sh)
         return false;
     }
 
-    printf("UI draw ready (SDF body + Gaussian shadow blur)\n");
+    /* ---- Glyph atlas pipeline ---- */
+    /* Allocate a separate pool for the atlas descriptor (1 set) */
+    {
+        VkDescriptorPoolSize atlas_pool_size = {
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+        };
+        VkDescriptorPoolCreateInfo atlas_dpci = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+            .poolSizeCount = 1,
+            .pPoolSizes = &atlas_pool_size,
+        };
+        if (vkCreateDescriptorPool(dev, &atlas_dpci, NULL, &out->txt_pool) != VK_SUCCESS) {
+            vk_draw_destroy(out); return false;
+        }
+        /* Reuse blit_set_layout for the atlas (same binding: combined-image-sampler at 0) */
+        out->txt_set_layout = out->blit_set_layout;
+        VkDescriptorSetAllocateInfo atlas_dsai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = out->txt_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &out->txt_set_layout,
+        };
+        if (vkAllocateDescriptorSets(dev, &atlas_dsai, &out->txt_set) != VK_SUCCESS) {
+            vk_draw_destroy(out); return false;
+        }
+    }
+
+    /* Nearest sampler for atlas glyphs (already AA'd by FreeType) */
+    {
+        VkSamplerCreateInfo txt_sci = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_NEAREST,
+            .minFilter = VK_FILTER_NEAREST,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        };
+        if (vkCreateSampler(dev, &txt_sci, NULL, &out->txt_sampler) != VK_SUCCESS) {
+            vk_draw_destroy(out); return false;
+        }
+    }
+
+    /* Text push-constant layout (rect, color, uv_rect, screen) */
+    {
+        VkPushConstantRange txt_pcr = {
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .size = sizeof(TextPush),
+        };
+        VkPipelineLayoutCreateInfo txt_lci = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &out->txt_set_layout,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &txt_pcr,
+        };
+        if (vkCreatePipelineLayout(dev, &txt_lci, NULL, &out->txt_layout) != VK_SUCCESS) {
+            vk_draw_destroy(out); return false;
+        }
+    }
+
+    out->txt_vert = create_module(dev, sh->txt_vert, sh->txt_vert_n);
+    out->txt_frag = create_module(dev, sh->txt_frag, sh->txt_frag_n);
+    if (!out->txt_vert || !out->txt_frag) {
+        vk_draw_destroy(out); return false;
+    }
+
+    /* Text pipeline: premultiplied-alpha blend */
+    {
+        VkPipelineColorBlendAttachmentState txt_ba = {
+            .blendEnable         = VK_TRUE,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp        = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .alphaBlendOp        = VK_BLEND_OP_ADD,
+            .colorWriteMask      = 0xF,
+        };
+        VkPipelineColorBlendStateCreateInfo txt_cb = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &txt_ba,
+        };
+        VkPipelineShaderStageCreateInfo txt_stages[2] = {
+            { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+              .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = out->txt_vert, .pName = "main" },
+            { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+              .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = out->txt_frag, .pName = "main" },
+        };
+        VkPipelineVertexInputStateCreateInfo txt_vi = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo txt_ia = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+        VkPipelineViewportStateCreateInfo txt_vp = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1, .scissorCount = 1 };
+        VkPipelineRasterizationStateCreateInfo txt_rs = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
+        VkPipelineMultisampleStateCreateInfo txt_ms = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+        VkDynamicState txt_dyn_arr[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo txt_dyn = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = 2, .pDynamicStates = txt_dyn_arr };
+        VkGraphicsPipelineCreateInfo txt_gp = {
+            .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount          = 2, .pStages      = txt_stages,
+            .pVertexInputState   = &txt_vi,
+            .pInputAssemblyState = &txt_ia,
+            .pViewportState      = &txt_vp,
+            .pRasterizationState = &txt_rs,
+            .pMultisampleState   = &txt_ms,
+            .pColorBlendState    = &txt_cb,
+            .pDynamicState       = &txt_dyn,
+            .layout              = out->txt_layout,
+            .renderPass          = ctx->render_pass,
+        };
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &txt_gp, NULL,
+                                       &out->txt_pipeline) != VK_SUCCESS) {
+            fprintf(stderr, "cgui text: failed to create atlas text pipeline\n");
+            vk_draw_destroy(out); return false;
+        }
+    }
+
+    /* Create the glyph atlas and bind its texture to the descriptor set */
+    out->glyph_atlas = cgui_atlas_create(ctx, out->text_engine);
+    if (!out->glyph_atlas) {
+        fprintf(stderr, "cgui text: failed to create glyph atlas\n");
+        vk_draw_destroy(out); return false;
+    }
+    {
+        VkDescriptorImageInfo atlas_img = {
+            .sampler     = out->txt_sampler,
+            .imageView   = cgui_atlas_image_view(out->glyph_atlas),
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet atlas_write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = out->txt_set,
+            .dstBinding      = 0,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo      = &atlas_img,
+        };
+        vkUpdateDescriptorSets(dev, 1, &atlas_write, 0, NULL);
+    }
+
+    printf("UI draw ready (SDF body + Gaussian shadow + GPU glyph atlas)\n");
     return true;
 }
 
@@ -843,13 +664,6 @@ void vk_draw_destroy(VkDraw *d)
     if (!dev) { memset(d, 0, sizeof(*d)); return; }
 
     vkDeviceWaitIdle(dev);
-    VkTextTexture *text_cache = d->text_cache;
-    for (size_t i = 0; i < d->text_cache_count; ++i) {
-        destroy_text_texture(dev, &text_cache[i]);
-    }
-    free(d->text_cache);
-    d->text_cache = NULL;
-    d->text_cache_count = 0;
     cgui_text_destroy(d->text_engine);
     d->text_engine = NULL;
 
@@ -874,6 +688,18 @@ void vk_draw_destroy(VkDraw *d)
     if (d->blur_frag) vkDestroyShaderModule(dev, d->blur_frag, NULL);
     if (d->blit_vert) vkDestroyShaderModule(dev, d->blit_vert, NULL);
     if (d->blit_frag) vkDestroyShaderModule(dev, d->blit_frag, NULL);
+
+    if (d->glyph_atlas) {
+        cgui_atlas_destroy((CguiGlyphAtlas *)d->glyph_atlas);
+        d->glyph_atlas = NULL;
+    }
+    if (d->txt_pipeline) vkDestroyPipeline(dev, d->txt_pipeline, NULL);
+    if (d->txt_layout) vkDestroyPipelineLayout(dev, d->txt_layout, NULL);
+    if (d->txt_pool) vkDestroyDescriptorPool(dev, d->txt_pool, NULL);
+    if (d->txt_sampler) vkDestroySampler(dev, d->txt_sampler, NULL);
+    if (d->txt_vert) vkDestroyShaderModule(dev, d->txt_vert, NULL);
+    if (d->txt_frag) vkDestroyShaderModule(dev, d->txt_frag, NULL);
+
     memset(d, 0, sizeof(*d));
 }
 
@@ -1126,23 +952,63 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
     if (raster_size == 0) {
         return false;
     }
-    VkTextTexture *texture = get_text_texture(d, utf8, raster_size, style_flags);
-    if (!texture) {
+
+    CguiGlyphAtlas *atlas = (CguiGlyphAtlas *)d->glyph_atlas;
+    if (!atlas) {
         return false;
     }
 
-    if (align_box) {
-        if (align == CGUI_ALIGN_CENTER) {
-            x += (box_w - (float)texture->width) * 0.5f;
-        } else if (align == CGUI_ALIGN_RIGHT) {
-            x += (box_w - (float)texture->width);
-        }
-        y += (box_h - (float)texture->height) * 0.5f;
+    CguiGlyphQuad stack_quads[256];
+    CguiGlyphQuad *quads = stack_quads;
+    uint32_t cap = 256;
+    uint32_t count = 0;
+    float text_w = 0.0f;
+    float text_h = 0.0f;
+
+    if (!cgui_atlas_shape_quads(atlas, utf8, 0.0f, 0.0f, raster_size, style_flags,
+                                quads, cap, &count, &text_w, &text_h)) {
+        return false;
     }
 
-    /* Snap to integer physical pixels to guarantee 1:1 texel-to-pixel mapping */
-    x = floorf(x + 0.5f);
-    y = floorf(y + 0.5f);
+    if (count > cap) {
+        quads = malloc(count * sizeof(CguiGlyphQuad));
+        if (!quads) return false;
+        cap = count;
+        if (!cgui_atlas_shape_quads(atlas, utf8, 0.0f, 0.0f, raster_size, style_flags,
+                                    quads, cap, &count, &text_w, &text_h)) {
+            free(quads);
+            return false;
+        }
+    }
+
+    if (count == 0) {
+        if (quads != stack_quads) free(quads);
+        return true;
+    }
+
+    float base_x = x;
+    float base_y = y;
+
+    if (align_box) {
+        if (align == CGUI_ALIGN_CENTER) {
+            base_x += (box_w - text_w) * 0.5f;
+        } else if (align == CGUI_ALIGN_RIGHT) {
+            base_x += (box_w - text_w);
+        }
+        base_y += (box_h - text_h) * 0.5f;
+    }
+
+    base_x = floorf(base_x + 0.5f);
+    base_y = floorf(base_y + 0.5f);
+
+    /* If new glyphs were rasterized into atlas, flush to GPU */
+    if (d->ctx->frame_open) {
+        vk_context_suspend_pass(d->ctx);
+    }
+    cgui_atlas_flush(atlas);
+    if (!d->ctx->frame_open) {
+        vk_context_resume_pass(d->ctx);
+    }
 
     VkContext *ctx = d->ctx;
     VkCommandBuffer cmd = ctx->active_cmd;
@@ -1154,28 +1020,45 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
     VkRect2D scissor = { .extent = ctx->swapchain_extent };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->blit_pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            d->blit_layout, 0, 1, &texture->descriptor, 0, NULL);
 
-    BlitPush push = {
-        .rect = { x, y, (float)texture->width, (float)texture->height },
-        .color = {
-            rgba[0] / 255.0f,
-            rgba[1] / 255.0f,
-            rgba[2] / 255.0f,
-            rgba[3] / 255.0f,
-        },
-        .uv_rect = { 0.0f, 0.0f, 1.0f, 1.0f },
-        .screen = {
-            (float)ctx->swapchain_extent.width,
-            (float)ctx->swapchain_extent.height,
-        },
-    };
-    vkCmdPushConstants(cmd, d->blit_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(push), &push);
-    vkCmdDraw(cmd, 6, 1, 0, 0);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->txt_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            d->txt_layout, 0, 1, &d->txt_set, 0, NULL);
+
+    float screen_w = (float)ctx->swapchain_extent.width;
+    float screen_h = (float)ctx->swapchain_extent.height;
+    float cr = rgba[0] / 255.0f;
+    float cg = rgba[1] / 255.0f;
+    float cb = rgba[2] / 255.0f;
+    float ca = rgba[3] / 255.0f;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const CguiGlyphQuad *q = &quads[i];
+        TextPush push = {
+            .rect = {
+                floorf(base_x + q->x + 0.5f),
+                floorf(base_y + q->y + 0.5f),
+                q->w,
+                q->h,
+            },
+            .color = { cr, cg, cb, ca },
+            .uv_rect = {
+                q->u0,
+                q->v0,
+                q->u1 - q->u0,
+                q->v1 - q->v0,
+            },
+            .screen = { screen_w, screen_h },
+        };
+        vkCmdPushConstants(cmd, d->txt_layout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
+
+    if (quads != stack_quads) {
+        free(quads);
+    }
     return true;
 }
 
@@ -1226,13 +1109,12 @@ bool vk_draw_measure_text(VkDraw *d, const char *utf8,
     if (raster_size == 0) {
         return false;
     }
-    VkTextTexture *texture = get_text_texture(d, utf8, raster_size, style_flags);
-    if (!texture) {
+    CguiGlyphAtlas *atlas = (CguiGlyphAtlas *)d->glyph_atlas;
+    if (!atlas) {
         return false;
     }
-    *w_out = (float)texture->width;
-    *h_out = (float)texture->height;
-    return true;
+    return cgui_atlas_shape_quads(atlas, utf8, 0.0f, 0.0f, raster_size, style_flags,
+                                  NULL, 0, NULL, w_out, h_out);
 }
 
 /* Mask pipeline global set from create */

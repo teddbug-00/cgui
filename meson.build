@@ -32,6 +32,8 @@ shaders = [
   ['blur.frag', 'frag'],
   ['blit.vert', 'vert'],
   ['blit.frag', 'frag'],
+  ['text.vert', 'vert'],
+  ['text.frag', 'frag'],
 ]
 
 spv_targets = []
@@ -51,6 +53,7 @@ sources = files(
   'src/gui.c',
   'src/style.c',
   'src/text.c',
+  'src/glyph_atlas.c',
   'src/panel.c',
   'src/button.c',
   'src/label.c',
@@ -80,7 +83,7 @@ test('text-rasterization', text_test)
 
 label_test = executable(
   'cgui-label-test',
-  ['tests/label_test.c', 'src/label.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  ['tests/label_test.c', 'src/label.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
   include_directories: include_directories('src'),
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
@@ -88,7 +91,7 @@ test('label-widget', label_test)
 
 toggle_test = executable(
   'cgui-toggle-test',
-  ['tests/toggle_test.c', 'src/toggle.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  ['tests/toggle_test.c', 'src/toggle.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
   include_directories: include_directories('src'),
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
@@ -96,7 +99,7 @@ test('toggle-widget', toggle_test)
 
 slider_test = executable(
   'cgui-slider-test',
-  ['tests/slider_test.c', 'src/slider.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  ['tests/slider_test.c', 'src/slider.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
   include_directories: include_directories('src'),
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
@@ -104,7 +107,7 @@ test('slider-widget', slider_test)
 
 bench_exe = executable(
   'cgui-bench',
-  ['benchmarks/bench_main.c', 'src/gui.c', 'src/style.c', 'src/text.c', 'src/panel.c', 'src/button.c', 'src/label.c', 'src/toggle.c', 'src/slider.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  ['benchmarks/bench_main.c', 'src/gui.c', 'src/style.c', 'src/glyph_atlas.c', 'src/text.c', 'src/panel.c', 'src/button.c', 'src/label.c', 'src/toggle.c', 'src/slider.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
   include_directories: include_directories('src'),
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )

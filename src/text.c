@@ -708,3 +708,225 @@ void cgui_text_bitmap_destroy(CguiTextBitmap *bitmap)
     free(bitmap->alpha);
     memset(bitmap, 0, sizeof(*bitmap));
 }
+
+/* ------------------------------------------------------------------ */
+/* Internal face/font selection helper                                 */
+/* ------------------------------------------------------------------ */
+
+static void select_face(CguiTextEngine *engine, uint32_t style_flags,
+                        FT_Face *face_out, hb_font_t **hb_out,
+                        bool *synth_bold_out, bool *synth_italic_out)
+{
+    FT_Face face       = engine->face_regular;
+    hb_font_t *hb      = engine->hb_regular;
+    bool synth_bold    = false;
+    bool synth_italic  = false;
+
+    bool want_bold   = (style_flags & CGUI_TEXT_BOLD) != 0;
+    bool want_italic = (style_flags & CGUI_TEXT_ITALIC) != 0;
+
+    if (want_bold && want_italic) {
+        if (engine->has_bold_italic_face && engine->face_bold_italic) {
+            face = engine->face_bold_italic; hb = engine->hb_bold_italic;
+        } else if (engine->has_bold_face && engine->face_bold) {
+            face = engine->face_bold; hb = engine->hb_bold; synth_italic = true;
+        } else if (engine->has_italic_face && engine->face_italic) {
+            face = engine->face_italic; hb = engine->hb_italic; synth_bold = true;
+        } else {
+            synth_bold = true; synth_italic = true;
+        }
+    } else if (want_bold) {
+        if (engine->has_bold_face && engine->face_bold) {
+            face = engine->face_bold; hb = engine->hb_bold;
+        } else {
+            synth_bold = true;
+        }
+    } else if (want_italic) {
+        if (engine->has_italic_face && engine->face_italic) {
+            face = engine->face_italic; hb = engine->hb_italic;
+        } else {
+            synth_italic = true;
+        }
+    }
+
+    if (!face) face = engine->face_regular;
+    if (!hb)   hb   = engine->hb_regular;
+
+    *face_out       = face;
+    *hb_out         = hb;
+    *synth_bold_out  = synth_bold;
+    *synth_italic_out = synth_italic;
+}
+
+/* ------------------------------------------------------------------ */
+/* cgui_text_shape – HarfBuzz layout (no FreeType rasterization)      */
+/* ------------------------------------------------------------------ */
+
+bool cgui_text_shape(CguiTextEngine *engine,
+                     const char *utf8, uint32_t pixel_size, uint32_t style_flags,
+                     CguiShapedGlyph *glyphs_out, uint32_t cap,
+                     uint32_t *count_out,
+                     float *total_w_out,
+                     float *ascender_out, float *line_h_out)
+{
+    if (!engine || !utf8 || pixel_size == 0 || pixel_size > 512u) return false;
+
+    FT_Face    face;
+    hb_font_t *hb;
+    bool synth_bold, synth_italic;
+    select_face(engine, style_flags, &face, &hb, &synth_bold, &synth_italic);
+    if (!face) return false;
+
+    if (FT_Set_Pixel_Sizes(face, 0, pixel_size) != 0) return false;
+
+    FT_Int32 load_flags = (pixel_size <= 24u)
+        ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)
+        : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING);
+
+    if (hb) {
+        hb_ft_font_changed(hb);
+        hb_ft_font_set_load_flags(hb, load_flags);
+    } else {
+        return false;
+    }
+
+    hb_buffer_t *buf = hb_buffer_create();
+    if (!buf || !hb_buffer_allocation_successful(buf)) {
+        if (buf) hb_buffer_destroy(buf);
+        return false;
+    }
+
+    int byte_len = (int)strlen(utf8);
+    hb_buffer_add_utf8(buf, utf8, byte_len, 0, byte_len);
+    hb_buffer_guess_segment_properties(buf);
+    hb_shape(hb, buf, NULL, 0);
+
+    unsigned int n = 0;
+    const hb_glyph_info_t     *infos = hb_buffer_get_glyph_infos(buf, &n);
+    const hb_glyph_position_t *pos   = hb_buffer_get_glyph_positions(buf, NULL);
+
+    if (count_out) *count_out = n;
+
+    float pen_x = 0.0f;
+    float pen_y = 0.0f;
+
+    for (unsigned int i = 0; i < n; ++i) {
+        float gx = pen_x + (float)pos[i].x_offset / 64.0f;
+        float gy = pen_y + (float)pos[i].y_offset / 64.0f;
+        float adv = (float)pos[i].x_advance / 64.0f;
+
+        if (glyphs_out && i < cap) {
+            glyphs_out[i].glyph_id  = infos[i].codepoint;
+            glyphs_out[i].pen_x     = gx;
+            glyphs_out[i].pen_y     = gy;
+            glyphs_out[i].advance_x = adv;
+        }
+        pen_x += adv;
+    }
+
+    if (total_w_out) *total_w_out = pen_x;
+
+    if (ascender_out || line_h_out) {
+        float asc = ceilf((float)face->size->metrics.ascender / 64.0f);
+        float lh  = ceilf((float)face->size->metrics.height   / 64.0f);
+        if (lh < (float)pixel_size) lh = (float)pixel_size;
+        if (ascender_out) *ascender_out = asc;
+        if (line_h_out)   *line_h_out   = lh;
+    }
+
+    hb_buffer_destroy(buf);
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* cgui_text_render_glyph – single glyph FreeType rasterization       */
+/* ------------------------------------------------------------------ */
+
+bool cgui_text_render_glyph(CguiTextEngine *engine,
+                            uint32_t glyph_id,
+                            uint32_t pixel_size, uint32_t style_flags,
+                            CguiGlyphBitmap *out)
+{
+    if (!engine || !out || pixel_size == 0 || pixel_size > 512u) return false;
+
+    FT_Face    face;
+    hb_font_t *hb;
+    bool synth_bold, synth_italic;
+    select_face(engine, style_flags, &face, &hb, &synth_bold, &synth_italic);
+    if (!face) return false;
+
+    if (FT_Set_Pixel_Sizes(face, 0, pixel_size) != 0) return false;
+
+    FT_Int32 load_flags = (pixel_size <= 24u)
+        ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT | FT_LOAD_NO_BITMAP)
+        : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING   | FT_LOAD_NO_BITMAP);
+
+    if (FT_Load_Glyph(face, (FT_UInt)glyph_id, load_flags) != 0) return false;
+
+    FT_GlyphSlot gs = face->glyph;
+
+    if (gs->format == FT_GLYPH_FORMAT_OUTLINE) {
+        if (synth_italic) FT_GlyphSlot_Oblique(gs);
+        if (synth_bold) {
+            FT_GlyphSlot_Embolden(gs);
+        } else {
+            if      (pixel_size <= 12u) FT_Outline_EmboldenXY(&gs->outline, 6, 2);
+            else if (pixel_size <= 16u) FT_Outline_EmboldenXY(&gs->outline, 4, 2);
+            else if (pixel_size <= 20u) FT_Outline_EmboldenXY(&gs->outline, 2, 0);
+        }
+    }
+
+    if (FT_Render_Glyph(gs, FT_RENDER_MODE_NORMAL) != 0) return false;
+
+    const FT_Bitmap *bm = &gs->bitmap;
+    if (!bm->buffer || bm->width == 0 || bm->rows == 0) {
+        /* Whitespace glyph — valid, no bitmap */
+        memset(out, 0, sizeof(*out));
+        out->bearing_x = gs->bitmap_left;
+        out->bearing_y = gs->bitmap_top;
+        return false; /* caller skips invisible glyphs */
+    }
+
+    uint32_t w = bm->width;
+    uint32_t h = bm->rows;
+    uint8_t *alpha = malloc((size_t)w * h);
+    if (!alpha) return false;
+
+    /* Copy with gamma correction */
+    if (bm->pixel_mode == FT_PIXEL_MODE_GRAY) {
+        int pitch = bm->pitch;
+        const uint8_t *src_base = (pitch >= 0)
+            ? bm->buffer
+            : bm->buffer + (size_t)(bm->rows - 1u) * (size_t)(-pitch);
+
+        for (uint32_t gy = 0; gy < h; ++gy) {
+            const uint8_t *src = src_base + (size_t)gy * (size_t)(pitch < 0 ? -pitch : pitch);
+            uint8_t *dst = alpha + (size_t)gy * w;
+            for (uint32_t gx = 0; gx < w; ++gx) {
+                dst[gx] = g_gamma_lut[src[gx]];
+            }
+        }
+    } else {
+        /* Mono or other: use coverage helper */
+        for (uint32_t gy = 0; gy < h; ++gy) {
+            for (uint32_t gx = 0; gx < w; ++gx) {
+                uint8_t raw = bitmap_coverage(bm, gx, gy);
+                alpha[(size_t)gy * w + gx] = g_gamma_lut[raw];
+            }
+        }
+    }
+
+    out->alpha     = alpha;
+    out->width     = w;
+    out->height    = h;
+    out->bearing_x = gs->bitmap_left;
+    out->bearing_y = gs->bitmap_top;
+    return true;
+}
+
+void cgui_glyph_bitmap_destroy(CguiGlyphBitmap *bm)
+{
+    if (!bm) return;
+    free(bm->alpha);
+    memset(bm, 0, sizeof(*bm));
+}
