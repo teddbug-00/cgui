@@ -83,78 +83,12 @@ static void print_bench_result(const char *name, uint64_t iters, uint64_t elapse
 
 static void bench_text_rendering(CguiTextEngine *engine)
 {
-    print_bench_header("Text Shaping & Rasterization (HarfBuzz + FreeType)");
+    print_bench_header("GPU Atlas & HarfBuzz Real-Time Text Engine");
 
     const char *short_str = "Settings";
     const char *med_str   = "Clean Vulkan UI with crisp macOS typography";
-    const char *long_str  = "The quick brown fox jumps over the lazy dog. 1234567890! FreeType stem darkening and subpixel alignment.";
 
-    /* Short label (Regular) */
-    {
-        uint64_t iters = 2000;
-        uint64_t start = get_time_ns();
-        for (uint64_t i = 0; i < iters; ++i) {
-            CguiTextBitmap bm = {0};
-            cgui_text_render_styled(engine, short_str, 16, CGUI_TEXT_REGULAR, &bm);
-            cgui_text_bitmap_destroy(&bm);
-        }
-        uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Rasterize Short Label (8 chars)", iters, elapsed);
-    }
-
-    /* Short label (Bold) */
-    {
-        uint64_t iters = 2000;
-        uint64_t start = get_time_ns();
-        for (uint64_t i = 0; i < iters; ++i) {
-            CguiTextBitmap bm = {0};
-            cgui_text_render_styled(engine, short_str, 16, CGUI_TEXT_BOLD, &bm);
-            cgui_text_bitmap_destroy(&bm);
-        }
-        uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Rasterize Short Label Bold (8 chars)", iters, elapsed);
-    }
-
-    /* Medium sentence (43 chars) */
-    {
-        uint64_t iters = 1000;
-        uint64_t start = get_time_ns();
-        for (uint64_t i = 0; i < iters; ++i) {
-            CguiTextBitmap bm = {0};
-            cgui_text_render_styled(engine, med_str, 14, CGUI_TEXT_REGULAR, &bm);
-            cgui_text_bitmap_destroy(&bm);
-        }
-        uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Rasterize Medium Sentence (43 chars)", iters, elapsed);
-    }
-
-    /* Long paragraph (103 chars) */
-    {
-        uint64_t iters = 500;
-        uint64_t start = get_time_ns();
-        for (uint64_t i = 0; i < iters; ++i) {
-            CguiTextBitmap bm = {0};
-            cgui_text_render_styled(engine, long_str, 14, CGUI_TEXT_REGULAR, &bm);
-            cgui_text_bitmap_destroy(&bm);
-        }
-        uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Rasterize Long Text (103 chars)", iters, elapsed);
-    }
-
-    /* Large font rasterization (48 px) */
-    {
-        uint64_t iters = 500;
-        uint64_t start = get_time_ns();
-        for (uint64_t i = 0; i < iters; ++i) {
-            CguiTextBitmap bm = {0};
-            cgui_text_render_styled(engine, short_str, 48, CGUI_TEXT_BOLD, &bm);
-            cgui_text_bitmap_destroy(&bm);
-        }
-        uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Rasterize Large Title (48px Bold)", iters, elapsed);
-    }
-
-    /* Fast HarfBuzz shaping (per-frame real-time text layout with cached glyph atlas) */
+    /* 1. Real-time HarfBuzz shaping (what runs per-frame for UI text layout) */
     {
         uint64_t iters = 100000;
         uint64_t start = get_time_ns();
@@ -178,6 +112,32 @@ static void bench_text_rendering(CguiTextEngine *engine)
         }
         uint64_t elapsed = get_time_ns() - start;
         print_bench_result("HarfBuzz Shape Medium Line (43 chars)", iters, elapsed);
+    }
+
+    /* 2. FreeType single glyph rasterization (runs ONCE per unique char into GPU Atlas) */
+    {
+        uint64_t iters = 10000;
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            CguiGlyphBitmap bm = {0};
+            cgui_text_render_glyph(engine, 766, 16, CGUI_TEXT_REGULAR, &bm);
+            cgui_glyph_bitmap_destroy(&bm);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("FreeType Rasterize Glyph (Cold Atlas Cache)", iters, elapsed);
+    }
+
+    /* 3. Legacy full-string software fallback (allocates whole string CPU bitmap) */
+    {
+        uint64_t iters = 1000;
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            CguiTextBitmap bm = {0};
+            cgui_text_render_styled(engine, short_str, 16, CGUI_TEXT_REGULAR, &bm);
+            cgui_text_bitmap_destroy(&bm);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("Legacy Full-String CPU Rasterize (Fallback)", iters, elapsed);
     }
 }
 

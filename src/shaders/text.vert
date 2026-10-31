@@ -20,23 +20,19 @@ layout(location = 1) out vec4 frag_color;
 
 void main()
 {
-    /* Unit quad: vertices 0-5 form two triangles */
-    float lx[6] = float[](0.0, 1.0, 1.0,  0.0, 0.0, 1.0);
-    float ly[6] = float[](0.0, 0.0, 1.0,  0.0, 1.0, 1.0);
-
-    float fx = push.rect.x + lx[gl_VertexIndex] * push.rect.z;
-    float fy = push.rect.y + ly[gl_VertexIndex] * push.rect.w;
-
-    /* NDC: map [0,screen] → [-1,+1] */
-    gl_Position = vec4(
-        fx / push.screen.x * 2.0 - 1.0,
-        fy / push.screen.y * 2.0 - 1.0,
-        0.0, 1.0
+    vec2 corners[6] = vec2[](
+        vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
+        vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
     );
+    vec2 uv = corners[gl_VertexIndex];
 
-    frag_uv = vec2(
-        push.uv_rect.x + lx[gl_VertexIndex] * push.uv_rect.z,
-        push.uv_rect.y + ly[gl_VertexIndex] * push.uv_rect.w
+    vec2 pos = push.rect.xy + uv * push.rect.zw;
+    vec2 ndc = vec2(
+        (pos.x / push.screen.x) * 2.0 - 1.0,
+        (pos.y / push.screen.y) * 2.0 - 1.0
     );
+    gl_Position = vec4(ndc, 0.0, 1.0);
+
+    frag_uv = push.uv_rect.xy + uv * push.uv_rect.zw;
     frag_color = push.color;
 }

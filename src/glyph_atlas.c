@@ -304,8 +304,6 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
         atlas->dirty = true;
     }
 
-    cgui_glyph_bitmap_destroy(&bm);
-
     CguiAtlasGlyph *g = &atlas->glyphs[atlas->glyph_count++];
     g->glyph_id    = glyph_id;
     g->pixel_size  = pixel_size;
@@ -316,6 +314,8 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
     g->atlas_h     = has_bitmap ? (uint16_t)bm.height : 0;
     g->bearing_x   = (int16_t)bm.bearing_x;
     g->bearing_y   = (int16_t)bm.bearing_y;
+
+    cgui_glyph_bitmap_destroy(&bm);
     return g;
 }
 
