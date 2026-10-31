@@ -30,23 +30,29 @@ struct CguiTextEngine {
     FT_Face face_bold;
     FT_Face face_italic;
     FT_Face face_bold_italic;
+    hb_font_t *hb_regular;
+    hb_font_t *hb_bold;
+    hb_font_t *hb_italic;
+    hb_font_t *hb_bold_italic;
     bool has_bold_face;
     bool has_italic_face;
     bool has_bold_italic_face;
 };
-
-typedef struct TextLine {
-    const char *text;
-    int length;
-    int min_advance;
-    int max_advance;
-} TextLine;
 
 typedef struct GlyphPlacement {
     hb_codepoint_t glyph;
     hb_position_t x;
     hb_position_t y;
 } GlyphPlacement;
+
+typedef struct TextLine {
+    const char *text;
+    int length;
+    GlyphPlacement *placements;
+    unsigned int glyph_count;
+    int min_advance;
+    int max_advance;
+} TextLine;
 
 static uint8_t g_gamma_lut[256];
 static bool g_gamma_initialized = false;
@@ -249,6 +255,20 @@ CguiTextEngine *cgui_text_create(void)
         return NULL;
     }
 
+    /* Cache HarfBuzz font instances to avoid re-parsing font tables per render */
+    if (engine->face_regular) {
+        engine->hb_regular = hb_ft_font_create_referenced(engine->face_regular);
+    }
+    if (engine->face_bold) {
+        engine->hb_bold = hb_ft_font_create_referenced(engine->face_bold);
+    }
+    if (engine->face_italic) {
+        engine->hb_italic = hb_ft_font_create_referenced(engine->face_italic);
+    }
+    if (engine->face_bold_italic) {
+        engine->hb_bold_italic = hb_ft_font_create_referenced(engine->face_bold_italic);
+    }
+
     return engine;
 }
 
@@ -257,6 +277,11 @@ void cgui_text_destroy(CguiTextEngine *engine)
     if (!engine) {
         return;
     }
+    if (engine->hb_bold_italic) hb_font_destroy(engine->hb_bold_italic);
+    if (engine->hb_italic)      hb_font_destroy(engine->hb_italic);
+    if (engine->hb_bold)        hb_font_destroy(engine->hb_bold);
+    if (engine->hb_regular)     hb_font_destroy(engine->hb_regular);
+
     if (engine->face_bold_italic && engine->face_bold_italic != engine->face_regular &&
         engine->face_bold_italic != engine->face_bold && engine->face_bold_italic != engine->face_italic) {
         FT_Done_Face(engine->face_bold_italic);
@@ -278,7 +303,7 @@ void cgui_text_destroy(CguiTextEngine *engine)
 }
 
 static bool shape_line(hb_font_t *font, const char *text, int length,
-                       hb_buffer_t **buffer_out, GlyphPlacement **placements_out,
+                       GlyphPlacement **placements_out,
                        unsigned int *count_out, int *min_advance, int *max_advance)
 {
     hb_buffer_t *buffer = hb_buffer_create();
@@ -296,7 +321,7 @@ static bool shape_line(hb_font_t *font, const char *text, int length,
     unsigned int count = 0;
     const hb_glyph_info_t *infos = hb_buffer_get_glyph_infos(buffer, &count);
     const hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(buffer, NULL);
-    GlyphPlacement *placements = count ? calloc(count, sizeof(*placements)) : NULL;
+    GlyphPlacement *placements = count ? malloc(count * sizeof(*placements)) : NULL;
     if (count && !placements) {
         hb_buffer_destroy(buffer);
         return false;
@@ -323,9 +348,9 @@ static bool shape_line(hb_font_t *font, const char *text, int length,
 
     *min_advance = (int)floor((double)min_x / 64.0);
     *max_advance = (int)ceil((double)max_x / 64.0);
-    *buffer_out = buffer;
     *placements_out = placements;
     *count_out = count;
+    hb_buffer_destroy(buffer);
     return true;
 }
 
@@ -351,35 +376,25 @@ static uint8_t bitmap_coverage(const FT_Bitmap *bitmap, unsigned int x, unsigned
     }
 }
 
-static void rasterize_line(CguiTextEngine *engine, FT_Face face, hb_font_t *font,
+static void rasterize_line(FT_Face face,
                            const TextLine *line, unsigned int line_index,
                            int line_min_advance, int ascender, int line_height,
                            uint32_t pixel_size, bool synth_bold, bool synth_italic,
                            unsigned int output_width, unsigned int output_height,
                            uint8_t *output)
 {
-    (void)engine;
-    hb_buffer_t *buffer = NULL;
-    GlyphPlacement *placements = NULL;
-    unsigned int count = 0;
-    int ignored_min, ignored_max;
-    if (!shape_line(font, line->text, line->length, &buffer, &placements,
-                    &count, &ignored_min, &ignored_max)) {
-        return;
-    }
-
     /* Light hinting at small sizes for vertical grid alignment; unhinted at large sizes */
     FT_Int32 load_flags = (pixel_size <= 24u)
         ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)
         : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING);
 
-    for (unsigned int i = 0; i < count; ++i) {
-        if (FT_Load_Glyph(face, placements[i].glyph, load_flags | FT_LOAD_NO_BITMAP) != 0) {
+    for (unsigned int i = 0; i < line->glyph_count; ++i) {
+        if (FT_Load_Glyph(face, line->placements[i].glyph, load_flags | FT_LOAD_NO_BITMAP) != 0) {
             continue;
         }
 
-        int pen_x = (int)floor((double)placements[i].x / 64.0);
-        int pen_y = (int)floor((double)placements[i].y / 64.0);
+        int pen_x = (int)floor((double)line->placements[i].x / 64.0);
+        int pen_y = (int)floor((double)line->placements[i].y / 64.0);
 
         if (face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
             /* 1. Synthetic italic (oblique 12° shear) when no true italic face is available */
@@ -402,7 +417,7 @@ static void rasterize_line(CguiTextEngine *engine, FT_Face face, hb_font_t *font
             }
 
             /* 3. Subpixel fractional translation for accurate letter spacing */
-            FT_Pos subpixel_x = (FT_Pos)(placements[i].x - (pen_x * 64));
+            FT_Pos subpixel_x = (FT_Pos)(line->placements[i].x - (pen_x * 64));
             if (subpixel_x != 0) {
                 FT_Outline_Translate(&face->glyph->outline, subpixel_x, 0);
             }
@@ -422,36 +437,59 @@ static void rasterize_line(CguiTextEngine *engine, FT_Face face, hb_font_t *font
         int line_top = (int)line_index * line_height;
         int dst_y = line_top + ascender - pen_y - glyph->bitmap_top;
 
-        for (unsigned int gy = 0; gy < bitmap->rows; ++gy) {
-            int y = dst_y + (int)gy;
-            if (y < 0 || y >= (int)output_height) {
-                continue;
+        if (bitmap->pixel_mode == FT_PIXEL_MODE_GRAY) {
+            int pitch = bitmap->pitch;
+            const uint8_t *src_base = pitch >= 0
+                ? bitmap->buffer
+                : bitmap->buffer + (size_t)(bitmap->rows - 1u) * (size_t)(-pitch);
+
+            for (unsigned int gy = 0; gy < bitmap->rows; ++gy) {
+                int y = dst_y + (int)gy;
+                if (y < 0 || y >= (int)output_height) continue;
+
+                const uint8_t *src_row = src_base + (size_t)gy * (size_t)pitch;
+                uint8_t *dst_row = output + (size_t)y * output_width;
+
+                for (unsigned int gx = 0; gx < bitmap->width; ++gx) {
+                    int x = dst_x + (int)gx;
+                    if (x < 0 || x >= (int)output_width) continue;
+
+                    uint8_t raw = src_row[gx];
+                    if (raw == 0) continue;
+
+                    uint8_t coverage = g_gamma_lut[raw];
+                    uint8_t existing = dst_row[x];
+                    if (existing == 0) {
+                        dst_row[x] = coverage;
+                    } else {
+                        dst_row[x] = (uint8_t)(existing + coverage - ((existing * coverage) / 255u));
+                    }
+                }
             }
-            for (unsigned int gx = 0; gx < bitmap->width; ++gx) {
-                int x = dst_x + (int)gx;
-                if (x < 0 || x >= (int)output_width) {
-                    continue;
-                }
-                size_t index = (size_t)y * output_width + (size_t)x;
-                uint8_t raw = bitmap_coverage(bitmap, gx, gy);
-                if (raw == 0) {
-                    continue;
-                }
-                /* Gamma-corrected coverage to preserve crisp edges in sRGB */
-                uint8_t coverage = g_gamma_lut[raw];
-                uint8_t existing = output[index];
-                if (existing == 0) {
-                    output[index] = coverage;
-                } else {
-                    /* Smooth alpha compositing for overlapping glyphs */
-                    output[index] = (uint8_t)(existing + coverage - ((existing * coverage) / 255u));
+        } else {
+            for (unsigned int gy = 0; gy < bitmap->rows; ++gy) {
+                int y = dst_y + (int)gy;
+                if (y < 0 || y >= (int)output_height) continue;
+
+                for (unsigned int gx = 0; gx < bitmap->width; ++gx) {
+                    int x = dst_x + (int)gx;
+                    if (x < 0 || x >= (int)output_width) continue;
+
+                    uint8_t raw = bitmap_coverage(bitmap, gx, gy);
+                    if (raw == 0) continue;
+
+                    uint8_t coverage = g_gamma_lut[raw];
+                    size_t index = (size_t)y * output_width + (size_t)x;
+                    uint8_t existing = output[index];
+                    if (existing == 0) {
+                        output[index] = coverage;
+                    } else {
+                        output[index] = (uint8_t)(existing + coverage - ((existing * coverage) / 255u));
+                    }
                 }
             }
         }
     }
-
-    free(placements);
-    hb_buffer_destroy(buffer);
 }
 
 bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
@@ -523,12 +561,22 @@ bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
         ? (FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)
         : (FT_LOAD_DEFAULT | FT_LOAD_NO_HINTING);
 
-    hb_font_t *font = hb_ft_font_create_referenced(face);
-    if (!font) {
-        fprintf(stderr, "cgui text: HarfBuzz font creation failed\n");
-        return false;
+    /* Use cached HarfBuzz font instance */
+    hb_font_t *font = engine->hb_regular;
+    if (face == engine->face_bold && engine->hb_bold) {
+        font = engine->hb_bold;
+    } else if (face == engine->face_italic && engine->hb_italic) {
+        font = engine->hb_italic;
+    } else if (face == engine->face_bold_italic && engine->hb_bold_italic) {
+        font = engine->hb_bold_italic;
     }
-    hb_ft_font_set_load_flags(font, load_flags);
+    if (!font) {
+        font = engine->hb_regular;
+    }
+    if (font) {
+        hb_ft_font_changed(font);
+        hb_ft_font_set_load_flags(font, load_flags);
+    }
 
     size_t line_count = 1;
     for (size_t i = 0; i < text_length; ++i) {
@@ -537,13 +585,11 @@ bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
         }
     }
     if (line_count > CGUI_TEXT_MAX_PIXELS) {
-        hb_font_destroy(font);
         return false;
     }
 
     TextLine *lines = calloc(line_count, sizeof(*lines));
     if (!lines) {
-        hb_font_destroy(font);
         return false;
     }
 
@@ -562,17 +608,14 @@ bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
             lines[line_index].text = start;
             lines[line_index].length = (int)length;
 
-            hb_buffer_t *buffer = NULL;
-            GlyphPlacement *placements = NULL;
-            unsigned int count = 0;
-            if (!shape_line(font, start, (int)length, &buffer, &placements,
-                            &count, &lines[line_index].min_advance,
+            if (!shape_line(font, start, (int)length,
+                            &lines[line_index].placements,
+                            &lines[line_index].glyph_count,
+                            &lines[line_index].min_advance,
                             &lines[line_index].max_advance)) {
                 ok = false;
                 break;
             }
-            free(placements);
-            hb_buffer_destroy(buffer);
             int line_width = lines[line_index].max_advance - lines[line_index].min_advance;
             if (line_width > max_width) {
                 max_width = line_width;
@@ -618,30 +661,36 @@ bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
             fprintf(stderr, "cgui text: rendered text exceeds %u x %u px limit\n",
                     CGUI_TEXT_MAX_PIXELS, CGUI_TEXT_MAX_PIXELS);
         }
+        for (size_t i = 0; i < line_index; ++i) {
+            free(lines[i].placements);
+        }
         free(lines);
-        hb_font_destroy(font);
         return false;
     }
 
     size_t pixel_count = (size_t)width * (size_t)height;
     out->alpha = calloc(pixel_count, 1);
     if (!out->alpha) {
+        for (size_t i = 0; i < line_index; ++i) {
+            free(lines[i].placements);
+        }
         free(lines);
-        hb_font_destroy(font);
         return false;
     }
     out->width = (uint32_t)width;
     out->height = (uint32_t)height;
 
     for (size_t i = 0; i < line_count; ++i) {
-        rasterize_line(engine, face, font, &lines[i], (unsigned int)i,
+        rasterize_line(face, &lines[i], (unsigned int)i,
                        lines[i].min_advance, ascender, line_height,
                        pixel_size, synth_bold, synth_italic,
                        out->width, out->height, out->alpha);
     }
 
+    for (size_t i = 0; i < line_count; ++i) {
+        free(lines[i].placements);
+    }
     free(lines);
-    hb_font_destroy(font);
     return true;
 }
 
