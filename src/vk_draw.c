@@ -47,8 +47,8 @@ typedef struct BlurPush {
 typedef struct BlitPush {
     float rect[4];
     float color[4];
+    float uv_rect[4];
     float screen[2];
-    float uv_scale[2];
 } BlitPush;
 
 /* ------------------------------------------------------------------ */
@@ -543,7 +543,7 @@ bool vk_draw_resize(VkDraw *d)
             .dstBinding = 0,
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &temp_info, /* final blur lives in temp after V pass */
+            .pImageInfo = &mask_info, /* final blur lives in mask after V pass */
         },
     };
     vkUpdateDescriptorSets(ctx->device, 3, writes, 0, NULL);
@@ -915,7 +915,8 @@ void vk_draw_rounded_rect(VkDraw *d,
 }
 
 static void draw_mask_offscreen(VkDraw *d, float x, float y, float w, float h,
-                                float radius, VkPipeline mask_pipe)
+                                float radius, VkPipeline mask_pipe,
+                                const VkRect2D *scissor)
 {
     VkContext *ctx = d->ctx;
     VkCommandBuffer cmd = ctx->active_cmd;
@@ -925,7 +926,7 @@ static void draw_mask_offscreen(VkDraw *d, float x, float y, float w, float h,
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = d->offscreen_pass,
         .framebuffer = d->mask_fb,
-        .renderArea = { .extent = { d->offscreen_w, d->offscreen_h } },
+        .renderArea = *scissor,
         .clearValueCount = 1,
         .pClearValues = &clear,
     };
@@ -936,18 +937,15 @@ static void draw_mask_offscreen(VkDraw *d, float x, float y, float w, float h,
         .height = (float)d->offscreen_h,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .extent = { d->offscreen_w, d->offscreen_h } };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdSetScissor(cmd, 0, 1, scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mask_pipe);
 
-    uint8_t white[4] = { 255, 255, 255, 255 };
     RRPush pc = {
         .rect = { x, y, w, h },
         .color = { 1, 1, 1, 1 },
         .params = { radius, 1.25f, (float)d->offscreen_w, (float)d->offscreen_h },
     };
-    (void)white;
     vkCmdPushConstants(cmd, d->rr_layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
@@ -956,7 +954,8 @@ static void draw_mask_offscreen(VkDraw *d, float x, float y, float w, float h,
 }
 
 static void blur_pass(VkDraw *d, VkFramebuffer fb, VkDescriptorSet src_set,
-                      float dir_x, float dir_y, float sigma)
+                      float dir_x, float dir_y, float sigma,
+                      const VkRect2D *scissor)
 {
     VkContext *ctx = d->ctx;
     VkCommandBuffer cmd = ctx->active_cmd;
@@ -966,7 +965,7 @@ static void blur_pass(VkDraw *d, VkFramebuffer fb, VkDescriptorSet src_set,
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = d->offscreen_pass,
         .framebuffer = fb,
-        .renderArea = { .extent = { d->offscreen_w, d->offscreen_h } },
+        .renderArea = *scissor,
         .clearValueCount = 1,
         .pClearValues = &clear,
     };
@@ -977,9 +976,8 @@ static void blur_pass(VkDraw *d, VkFramebuffer fb, VkDescriptorSet src_set,
         .height = (float)d->offscreen_h,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .extent = { d->offscreen_w, d->offscreen_h } };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdSetScissor(cmd, 0, 1, scissor);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->blur_pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1000,87 +998,105 @@ void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
 {
     if (!d || !s || !d->ctx) return;
 
+    /* Ensure offscreen matches swapchain */
+    if (d->offscreen_w != d->ctx->swapchain_extent.width ||
+        d->offscreen_h != d->ctx->swapchain_extent.height) {
+        vk_draw_resize(d);
+    }
+
     if ((s->shadow_blur > 0.0f || s->shadow_offset_y != 0.0f) && s->shadow_color[3] > 0) {
         float sigma = fmaxf(s->shadow_blur * 0.5f, 1.0f);
+        float pad = ceilf(sigma * 3.0f + 2.0f);
 
-        if (s->shadow_mode == 1) {
-            /* Heavy multi-pass offscreen Gaussian blur path */
-            if (d->offscreen_w != d->ctx->swapchain_extent.width ||
-                d->offscreen_h != d->ctx->swapchain_extent.height) {
-                vk_draw_resize(d);
-            }
+        int32_t sx = (int32_t)floorf(x - pad);
+        int32_t sy = (int32_t)floorf(y - pad);
+        int32_t ex = (int32_t)ceilf(x + w + pad);
+        int32_t ey = (int32_t)ceilf(y + h + pad);
+
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (ex > (int32_t)d->offscreen_w) ex = (int32_t)d->offscreen_w;
+        if (ey > (int32_t)d->offscreen_h) ey = (int32_t)d->offscreen_h;
+
+        if (ex > sx && ey > sy) {
+            VkRect2D scissor = {
+                .offset = { sx, sy },
+                .extent = { (uint32_t)(ex - sx), (uint32_t)(ey - sy) },
+            };
 
             vk_context_suspend_pass(d->ctx);
 
-            /* 1. Mask */
-            draw_mask_offscreen(d, x, y, w, h, s->corner_radius, cgui_mask_pipeline);
+            /* 1. Mask (scissored strictly to shadow bounding box) */
+            draw_mask_offscreen(d, x, y, w, h, s->corner_radius, cgui_mask_pipeline, &scissor);
 
-            /* 2. H blur: mask → temp */
+            /* 2. H blur: mask → temp (scissored) */
             blur_pass(d, d->temp_fb, d->blur_set_a,
-                      1.0f / (float)d->offscreen_w, 0.0f, sigma);
+                      1.0f / (float)d->offscreen_w, 0.0f, sigma, &scissor);
 
-            /* 3. V blur: temp → mask (reuse mask as final blurred) */
+            /* 3. V blur: temp → mask (scissored, final blur in mask) */
             blur_pass(d, d->mask_fb, d->blur_set_b,
-                      0.0f, 1.0f / (float)d->offscreen_h, sigma);
-
-            /* Point blit at mask (final) */
-            VkDescriptorImageInfo img = {
-                .sampler = d->sampler,
-                .imageView = d->mask_view,
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            };
-            VkWriteDescriptorSet write = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = d->blit_set,
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo = &img,
-            };
-            vkUpdateDescriptorSets(d->ctx->device, 1, &write, 0, NULL);
+                      0.0f, 1.0f / (float)d->offscreen_h, sigma, &scissor);
 
             vk_context_resume_pass(d->ctx);
 
-            /* 4. Composite blurred mask as shadow */
+            /* 4. Composite blurred mask as shadow onto main framebuffer */
             VkCommandBuffer cmd = d->ctx->active_cmd;
             VkViewport viewport = {
                 .width = (float)d->ctx->swapchain_extent.width,
                 .height = (float)d->ctx->swapchain_extent.height,
                 .maxDepth = 1.0f,
             };
-            VkRect2D scissor = { .extent = d->ctx->swapchain_extent };
             vkCmdSetViewport(cmd, 0, 1, &viewport);
-            vkCmdSetScissor(cmd, 0, 1, &scissor);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->blit_pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    d->blit_layout, 0, 1, &d->blit_set, 0, NULL);
 
-            BlitPush bp = {
-                .rect = { 0, s->shadow_offset_y, (float)d->offscreen_w, (float)d->offscreen_h },
-                .color = {
-                    s->shadow_color[0]/255.f,
-                    s->shadow_color[1]/255.f,
-                    s->shadow_color[2]/255.f,
-                    s->shadow_color[3]/255.f,
-                },
-                .screen = {
-                    (float)d->ctx->swapchain_extent.width,
-                    (float)d->ctx->swapchain_extent.height,
-                },
-                .uv_scale = { 1.f, 1.f },
-            };
-            vkCmdPushConstants(cmd, d->blit_layout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(bp), &bp);
-            vkCmdDraw(cmd, 6, 1, 0, 0);
-        } else {
-            /* Ultra-fast single-pass GPU analytical SDF shadow (no offscreen overhead) */
-            vk_draw_rounded_rect(d,
-                                 x, y + s->shadow_offset_y,
-                                 w, h,
-                                 s->corner_radius,
-                                 -sigma,
-                                 s->shadow_color);
+            float dst_x = (float)sx;
+            float dst_y = (float)sy + s->shadow_offset_y;
+            float dst_w = (float)scissor.extent.width;
+            float dst_h = (float)scissor.extent.height;
+
+            int32_t bsx = (int32_t)floorf(dst_x);
+            int32_t bsy = (int32_t)floorf(dst_y);
+            int32_t bex = (int32_t)ceilf(dst_x + dst_w);
+            int32_t bey = (int32_t)ceilf(dst_y + dst_h);
+
+            if (bsx < 0) bsx = 0;
+            if (bsy < 0) bsy = 0;
+            if (bex > (int32_t)d->ctx->swapchain_extent.width) bex = (int32_t)d->ctx->swapchain_extent.width;
+            if (bey > (int32_t)d->ctx->swapchain_extent.height) bey = (int32_t)d->ctx->swapchain_extent.height;
+
+            if (bex > bsx && bey > bsy) {
+                VkRect2D blit_scissor = {
+                    .offset = { bsx, bsy },
+                    .extent = { (uint32_t)(bex - bsx), (uint32_t)(bey - bsy) },
+                };
+                vkCmdSetScissor(cmd, 0, 1, &blit_scissor);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->blit_pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        d->blit_layout, 0, 1, &d->blit_set, 0, NULL);
+
+                BlitPush bp = {
+                    .rect = { dst_x, dst_y, dst_w, dst_h },
+                    .color = {
+                        s->shadow_color[0] / 255.0f,
+                        s->shadow_color[1] / 255.0f,
+                        s->shadow_color[2] / 255.0f,
+                        s->shadow_color[3] / 255.0f,
+                    },
+                    .uv_rect = {
+                        (float)sx / (float)d->offscreen_w,
+                        (float)sy / (float)d->offscreen_h,
+                        (float)scissor.extent.width / (float)d->offscreen_w,
+                        (float)scissor.extent.height / (float)d->offscreen_h,
+                    },
+                    .screen = {
+                        (float)d->ctx->swapchain_extent.width,
+                        (float)d->ctx->swapchain_extent.height,
+                    },
+                };
+                vkCmdPushConstants(cmd, d->blit_layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(bp), &bp);
+                vkCmdDraw(cmd, 6, 1, 0, 0);
+            }
         }
     }
 
@@ -1150,11 +1166,11 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
             rgba[2] / 255.0f,
             rgba[3] / 255.0f,
         },
+        .uv_rect = { 0.0f, 0.0f, 1.0f, 1.0f },
         .screen = {
             (float)ctx->swapchain_extent.width,
             (float)ctx->swapchain_extent.height,
         },
-        .uv_scale = { 1.0f, 1.0f },
     };
     vkCmdPushConstants(cmd, d->blit_layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

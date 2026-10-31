@@ -19,7 +19,6 @@ Style style_default(void)
         .shadow_offset_y = 4.0f,
         .shadow_blur     = 14.0f,
         .shadow_color    = { 0, 0, 0, 50 },
-        .shadow_mode     = 0,
 
         .text_size       = 14.0f,
         .text_color      = { 29, 29, 31, 255 },
