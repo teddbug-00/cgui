@@ -25,6 +25,8 @@ static LayoutChildStyle child_style_default(void)
         .flex_weight = 1.0f,
         .min_size = 0.0f,
         .max_size = 0.0f,
+        .margin = {0},
+        .cross_align = LAYOUT_ALIGN_INHERIT,
     };
 }
 
@@ -140,7 +142,13 @@ static bool child_style_valid(LayoutChildStyle style)
     return isfinite(style.flex_weight) && style.flex_weight > 0.0f &&
            isfinite(style.min_size) && style.min_size >= 0.0f &&
            isfinite(style.max_size) && style.max_size >= 0.0f &&
-           (style.max_size == 0.0f || style.max_size >= style.min_size);
+           (style.max_size == 0.0f || style.max_size >= style.min_size) &&
+           isfinite(style.margin.top) && style.margin.top >= 0.0f &&
+           isfinite(style.margin.right) && style.margin.right >= 0.0f &&
+           isfinite(style.margin.bottom) && style.margin.bottom >= 0.0f &&
+           isfinite(style.margin.left) && style.margin.left >= 0.0f &&
+           style.cross_align >= LAYOUT_ALIGN_FILL &&
+           style.cross_align <= LAYOUT_ALIGN_INHERIT;
 }
 
 bool layout_container_set_child_style(LayoutContainer *layout, Widget *child,
@@ -196,16 +204,19 @@ void layout_container_reflow(LayoutContainer *layout)
         LayoutChildOptions *options = find_child_options(layout, child);
         LayoutChildStyle child_style = options
             ? options->style : child_style_default();
+        float main_margins = horizontal
+            ? child_style.margin.left + child_style.margin.right
+            : child_style.margin.top + child_style.margin.bottom;
         float minimum = child_style.min_size;
         float maximum = child_style.max_size > 0.0f
             ? child_style.max_size : INFINITY;
         float child_main;
         if (isfinite(requested) && requested > 0.0f) {
             child_main = fminf(maximum, fmaxf(minimum, requested));
-            fixed_total += child_main;
+            fixed_total += child_main + main_margins;
         } else {
             child_main = minimum;
-            flexible_min_total += minimum;
+            flexible_min_total += minimum + main_margins;
         }
         if (horizontal) child->bounds.w = child_main;
         else child->bounds.h = child_main;
@@ -297,39 +308,52 @@ void layout_container_reflow(LayoutContainer *layout)
 
     for (size_t i = 0; i < count; ++i) {
         Widget *child = base->children[i];
+        LayoutChildOptions *options = find_child_options(layout, child);
+        LayoutChildStyle child_style = options
+            ? options->style : child_style_default();
         float requested_cross = horizontal
             ? child->style.height : child->style.width;
         float child_main = horizontal ? child->bounds.w : child->bounds.h;
-        float child_cross = style->cross_align != LAYOUT_ALIGN_FILL &&
+        float margin_main_start = horizontal
+            ? child_style.margin.left : child_style.margin.top;
+        float margin_main_end = horizontal
+            ? child_style.margin.right : child_style.margin.bottom;
+        float margin_cross_start = horizontal
+            ? child_style.margin.top : child_style.margin.left;
+        float margin_cross_end = horizontal
+            ? child_style.margin.bottom : child_style.margin.right;
+        float available_cross = fmaxf(
+            0.0f, content_cross - margin_cross_start - margin_cross_end);
+        LayoutAlign cross_align =
+            child_style.cross_align == LAYOUT_ALIGN_INHERIT
+                ? style->cross_align : child_style.cross_align;
+        float child_cross = cross_align != LAYOUT_ALIGN_FILL &&
                             isfinite(requested_cross) && requested_cross > 0.0f
-            ? fminf(requested_cross, content_cross) : content_cross;
+            ? fminf(requested_cross, available_cross) : available_cross;
         float cross_offset = 0.0f;
 
-        if (style->cross_align != LAYOUT_ALIGN_FILL &&
-            requested_cross > 0.0f &&
-            style->cross_align == LAYOUT_ALIGN_CENTER) {
-            cross_offset = (content_cross - child_cross) * 0.5f;
-        } else if (style->cross_align != LAYOUT_ALIGN_FILL &&
-                   requested_cross > 0.0f &&
-                   style->cross_align == LAYOUT_ALIGN_END) {
-            cross_offset = content_cross - child_cross;
+        if (cross_align == LAYOUT_ALIGN_CENTER) {
+            cross_offset = (available_cross - child_cross) * 0.5f;
+        } else if (cross_align == LAYOUT_ALIGN_END) {
+            cross_offset = available_cross - child_cross;
         }
 
         if (horizontal) {
             child->bounds = (Rect) {
-                .x = cursor,
-                .y = cross_start + cross_offset,
+                .x = cursor + margin_main_start,
+                .y = cross_start + margin_cross_start + cross_offset,
                 .w = child_main,
                 .h = child_cross,
             };
         } else {
             child->bounds = (Rect) {
-                .x = cross_start + cross_offset,
-                .y = cursor,
+                .x = cross_start + margin_cross_start + cross_offset,
+                .y = cursor + margin_main_start,
                 .w = child_cross,
                 .h = child_main,
             };
         }
-        cursor += child_main + style->spacing;
+        cursor += margin_main_start + child_main + margin_main_end +
+                  style->spacing;
     }
 }

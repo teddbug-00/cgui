@@ -127,16 +127,30 @@ int main(void)
     one_style.flex_weight = 1.0f;
     one_style.min_size = 40.0f;
     one_style.max_size = 60.0f;
+    one_style.margin = (LayoutInsets) {
+        .top = 4.0f, .right = 7.0f, .bottom = 6.0f, .left = 5.0f,
+    };
+    one_style.cross_align = LAYOUT_ALIGN_START;
     LayoutChildStyle two_style = layout_child_style_default();
     two_style.flex_weight = 2.0f;
     two_style.min_size = 50.0f;
+    weighted_one->style.height = 7.0f;
+    weighted_two->style.height = 10.0f;
+    two_style.margin.top = 2.0f;
+    two_style.margin.bottom = 2.0f;
+    two_style.cross_align = LAYOUT_ALIGN_END;
     if (!layout_container_set_child_style(weighted_row, weighted_one,
                                           one_style) ||
         !layout_container_set_child_style(weighted_row, weighted_two,
                                           two_style) ||
         !near(weighted_one->bounds.w, 60.0f) ||
-        !near(weighted_two->bounds.w, 170.0f)) {
-        fprintf(stderr, "Weighted flex or maximum constraint failed\n");
+        !near(weighted_two->bounds.w, 158.0f) ||
+        !near(weighted_one->bounds.x, 75.0f) ||
+        !near(weighted_one->bounds.y, 14.0f) ||
+        !near(weighted_two->bounds.x, 152.0f) ||
+        !near(weighted_two->bounds.y, 18.0f) ||
+        !near(weighted_two->bounds.h, 10.0f)) {
+        fprintf(stderr, "Weighted flex, margins, or cross alignment failed\n");
         widget_destroy(layout_container_widget(weighted_row));
         return 1;
     }
@@ -149,7 +163,49 @@ int main(void)
         widget_destroy(layout_container_widget(weighted_row));
         return 1;
     }
+    LayoutChildStyle invalid_child_style = one_style;
+    invalid_child_style.margin.left = -1.0f;
+    if (layout_container_set_child_style(weighted_row, weighted_one,
+                                         invalid_child_style)) {
+        fprintf(stderr, "Invalid child margin was accepted\n");
+        widget_destroy(layout_container_widget(weighted_row));
+        return 1;
+    }
     widget_destroy(layout_container_widget(weighted_row));
+
+    LayoutStyle column_style = layout_style_default(LAYOUT_VERTICAL);
+    column_style.padding = 10.0f;
+    LayoutContainer *column = layout_container_create(
+        (Rect){0.0f, 0.0f, 100.0f, 100.0f}, column_style);
+    Widget *column_child = widget_create();
+    if (!column || !column_child) {
+        widget_destroy(layout_container_widget(column));
+        widget_destroy(column_child);
+        return 1;
+    }
+    column_child->style.width = 20.0f;
+    column_child->style.height = 20.0f;
+    if (!layout_container_add_child(column, column_child)) {
+        widget_destroy(column_child);
+        widget_destroy(layout_container_widget(column));
+        return 1;
+    }
+    LayoutChildStyle column_child_style = layout_child_style_default();
+    column_child_style.cross_align = LAYOUT_ALIGN_END;
+    column_child_style.margin = (LayoutInsets) {
+        .top = 3.0f, .right = 6.0f, .bottom = 5.0f, .left = 10.0f,
+    };
+    if (!layout_container_set_child_style(column, column_child,
+                                          column_child_style) ||
+        !near(column_child->bounds.x, 64.0f) ||
+        !near(column_child->bounds.y, 13.0f) ||
+        !near(column_child->bounds.w, 20.0f) ||
+        !near(column_child->bounds.h, 20.0f)) {
+        fprintf(stderr, "Vertical margins or cross alignment failed\n");
+        widget_destroy(layout_container_widget(column));
+        return 1;
+    }
+    widget_destroy(layout_container_widget(column));
 
     puts("Widget layout tests passed!");
     return 0;

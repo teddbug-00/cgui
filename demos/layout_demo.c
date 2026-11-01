@@ -222,9 +222,9 @@ static bool create_showcase(LayoutContainer *root, float width, float height)
     }
     DemoTile *fixed_start = tile_create("Fixed", "width hint: 92 px",
                                         fixed_color, 92.0f, 0.0f);
-    DemoTile *flex_one = tile_create("Flex 1", "weight 1 | max 160 px",
+    DemoTile *flex_one = tile_create("Flex 1", "weight 1 | align start",
                                      flexible_color, 0.0f, 0.0f);
-    DemoTile *flex_two = tile_create("Flex 2", "weight 2 | min 100 px",
+    DemoTile *flex_two = tile_create("Flex 2", "weight 2 | align end",
                                      fixed_alt_color, 0.0f, 0.0f);
     DemoTile *fixed_end = tile_create("Fixed", "width hint: 92 px",
                                       fixed_color, 92.0f, 0.0f);
@@ -235,13 +235,23 @@ static bool create_showcase(LayoutContainer *root, float width, float height)
         widget_destroy((Widget *)fixed_end);
         return false;
     }
+    flex_one->base.style.height = 84.0f;
+    flex_two->base.style.height = 120.0f;
     LayoutChildStyle flex_one_style = layout_child_style_default();
     flex_one_style.flex_weight = 1.0f;
     flex_one_style.min_size = 80.0f;
     flex_one_style.max_size = 160.0f;
+    flex_one_style.margin = (LayoutInsets) {
+        .top = 12.0f, .right = 6.0f, .bottom = 8.0f, .left = 6.0f,
+    };
+    flex_one_style.cross_align = LAYOUT_ALIGN_START;
     LayoutChildStyle flex_two_style = layout_child_style_default();
     flex_two_style.flex_weight = 2.0f;
     flex_two_style.min_size = 100.0f;
+    flex_two_style.margin = (LayoutInsets) {
+        .top = 6.0f, .right = 8.0f, .bottom = 14.0f, .left = 8.0f,
+    };
+    flex_two_style.cross_align = LAYOUT_ALIGN_END;
     if (!layout_container_add_child(hbox, (Widget *)fixed_start) ||
         !layout_container_add_child(hbox, (Widget *)flex_one) ||
         !layout_container_add_child(hbox, (Widget *)flex_two) ||

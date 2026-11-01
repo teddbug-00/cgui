@@ -17,7 +17,15 @@ typedef enum LayoutAlign {
     LAYOUT_ALIGN_START,
     LAYOUT_ALIGN_CENTER,
     LAYOUT_ALIGN_END,
+    LAYOUT_ALIGN_INHERIT,
 } LayoutAlign;
+
+typedef struct LayoutInsets {
+    float top;
+    float right;
+    float bottom;
+    float left;
+} LayoutInsets;
 
 typedef struct LayoutStyle {
     LayoutDirection direction;
@@ -30,6 +38,8 @@ typedef struct LayoutChildStyle {
     float flex_weight;
     float min_size;
     float max_size;
+    LayoutInsets margin;
+    LayoutAlign cross_align;
 } LayoutChildStyle;
 
 typedef struct LayoutContainer LayoutContainer;
@@ -37,8 +47,8 @@ typedef struct LayoutContainer LayoutContainer;
 /**
  * Child Style.width/height act as fixed-size hints. A missing main-axis hint
  * shares remaining space according to flex_weight. min_size/max_size constrain
- * the main-axis size; max_size zero means unbounded. A zero cross-axis hint
- * fills the container.
+ * the main-axis size; max_size zero means unbounded. Margins reduce available
+ * space on both axes. LAYOUT_ALIGN_INHERIT uses the container's alignment.
  */
 LayoutStyle layout_style_default(LayoutDirection direction);
 LayoutChildStyle layout_child_style_default(void);
