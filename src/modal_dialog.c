@@ -11,8 +11,6 @@
 
 #include "button.h"
 
-#define MODAL_DIALOG_ANIMATION_NS UINT64_C(180000000)
-
 typedef struct ModalDialogAction {
     char *label;
     Button *button;
@@ -30,7 +28,6 @@ struct ModalDialog {
     size_t action_capacity;
     bool open;
     bool dismissible;
-    Uint64 opened_at_ns;
     ModalDialogActionFn on_action;
     void *userdata;
 };
@@ -86,15 +83,6 @@ static float dialog_fixed_height(const ModalDialog *dialog)
     return height;
 }
 
-static float dialog_animation_progress(const ModalDialog *dialog)
-{
-    if (!dialog->open) return 1.0f;
-    Uint64 elapsed = SDL_GetTicksNS() - dialog->opened_at_ns;
-    float progress = (float)elapsed / (float)MODAL_DIALOG_ANIMATION_NS;
-    if (progress >= 1.0f) return 1.0f;
-    return progress * progress * (3.0f - 2.0f * progress);
-}
-
 static Rect dialog_panel_bounds(const ModalDialog *dialog)
 {
     const Rect *viewport = &dialog->base.bounds;
@@ -102,9 +90,6 @@ static Rect dialog_panel_bounds(const ModalDialog *dialog)
                         fmaxf(0.0f, viewport->w - 32.0f));
     float height = fminf(dialog_fixed_height(dialog),
                          fmaxf(0.0f, viewport->h - 32.0f));
-    float scale = 0.98f + 0.02f * dialog_animation_progress(dialog);
-    width *= scale;
-    height *= scale;
     return (Rect) {
         .x = viewport->x + (viewport->w - width) * 0.5f,
         .y = viewport->y + (viewport->h - height) * 0.5f,
@@ -179,43 +164,30 @@ static void modal_dialog_draw(Widget *self, struct VkContext *context)
     ModalDialog *dialog = (ModalDialog *)self;
     if (!dialog->open || !g_draw) return;
 
-    float progress = dialog_animation_progress(dialog);
-    uint8_t backdrop[4];
-    memcpy(backdrop, dialog->dialog_style.backdrop, sizeof(backdrop));
-    backdrop[3] = (uint8_t)((float)backdrop[3] * progress);
     vk_draw_rounded_rect(g_draw, self->bounds.x, self->bounds.y,
                          self->bounds.w, self->bounds.h, 0.0f, 0.5f,
-                         backdrop);
+                         dialog->dialog_style.backdrop);
     Rect panel = dialog_panel_bounds(dialog);
     Style box = style_default();
     box.corner_radius = dialog->dialog_style.corner_radius;
     box.border_width = 0.5f;
     box.shadow_offset_y = 8.0f;
     box.shadow_blur = 24.0f;
-    box.shadow_color[3] = (uint8_t)(60.0f * progress);
+    box.shadow_color[3] = 60;
     memcpy(box.bg, dialog->dialog_style.background, 4);
     memcpy(box.border_color, dialog->dialog_style.border, 4);
-    box.bg[3] = (uint8_t)((float)box.bg[3] * progress);
-    box.border_color[3] = (uint8_t)((float)box.border_color[3] * progress);
     vk_draw_style_box(g_draw, panel.x, panel.y, panel.w, panel.h, &box);
 
     float x = panel.x + dialog->dialog_style.padding;
     float y = panel.y + dialog->dialog_style.padding;
-    uint8_t title_color[4];
-    memcpy(title_color, dialog->dialog_style.title, sizeof(title_color));
-    title_color[3] = (uint8_t)((float)title_color[3] * progress);
     (void)vk_draw_text(g_draw, dialog->title, x, y,
                        dialog->dialog_style.title_size,
-                       title_color);
+                       dialog->dialog_style.title);
     y += dialog->dialog_style.title_size + 8.0f;
     if (dialog->message[0] != '\0') {
-        uint8_t message_color[4];
-        memcpy(message_color, dialog->dialog_style.message,
-               sizeof(message_color));
-        message_color[3] = (uint8_t)((float)message_color[3] * progress);
         (void)vk_draw_text(g_draw, dialog->message, x, y,
                            dialog->dialog_style.message_size,
-                           message_color);
+                           dialog->dialog_style.message);
     }
 
     if (dialog->content && dialog->content->draw) {
@@ -458,10 +430,7 @@ void modal_dialog_set_dismissible(ModalDialog *dialog, bool dismissible)
 
 void modal_dialog_open(ModalDialog *dialog)
 {
-    if (dialog && !dialog->open) {
-        dialog->opened_at_ns = SDL_GetTicksNS();
-        dialog->open = true;
-    }
+    if (dialog) dialog->open = true;
 }
 
 void modal_dialog_close(ModalDialog *dialog)
