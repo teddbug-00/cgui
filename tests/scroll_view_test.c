@@ -90,7 +90,105 @@ int main(void)
         return 1;
     }
 
+    SDL_Event key = {0};
+    key.type = SDL_EVENT_KEY_DOWN;
+    key.key.key = SDLK_DOWN;
+    key.key.repeat = false;
+    view_widget->handle_event(view_widget, &key);
+    if (scroll_view_is_focused(view) ||
+        !near(scroll_view_scroll_offset(view), 48.0f)) {
+        fprintf(stderr, "Unfocused ScrollView reacted to keyboard input\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
     SDL_Event pointer = {0};
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 50;
+    pointer.button.y = 50;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!scroll_view_is_focused(view)) {
+        fprintf(stderr, "Clicking the ScrollView did not focus it\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 96.0f)) {
+        fprintf(stderr, "Down arrow did not scroll by one wheel step\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_PAGEDOWN;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 148.0f)) {
+        fprintf(stderr, "Page Down did not scroll by a viewport page\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_PAGEUP;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 96.0f)) {
+        fprintf(stderr, "Page Up did not scroll by a viewport page\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_UP;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 48.0f)) {
+        fprintf(stderr, "Up arrow did not scroll by one wheel step\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_END;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 200.0f)) {
+        fprintf(stderr, "End did not scroll to the bottom\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_HOME;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 0.0f)) {
+        fprintf(stderr, "Home did not scroll to the top\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_ESCAPE;
+    view_widget->handle_event(view_widget, &key);
+    if (scroll_view_is_focused(view)) {
+        fprintf(stderr, "Escape did not clear ScrollView focus\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_DOWN;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset(view), 0.0f)) {
+        fprintf(stderr, "ScrollView reacted to keys after losing focus\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    scroll_view_set_focused(view, true);
+    if (!scroll_view_is_focused(view)) {
+        fprintf(stderr, "Programmatic ScrollView focus was not set\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.button.x = 300;
+    pointer.button.y = 300;
+    view_widget->handle_event(view_widget, &pointer);
+    if (scroll_view_is_focused(view)) {
+        fprintf(stderr, "Clicking outside the ScrollView did not clear focus\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    if (!scroll_view_set_scroll_offset(view, 48.0f)) {
+        widget_destroy(view_widget);
+        return 1;
+    }
+
     pointer.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     pointer.button.button = SDL_BUTTON_LEFT;
     pointer.button.x = 205;

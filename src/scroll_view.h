@@ -21,6 +21,9 @@ bool scroll_view_set_content(ScrollView *view, Widget *content,
                              float content_height);
 bool scroll_view_set_content_height(ScrollView *view, float content_height);
 bool scroll_view_set_scroll_offset(ScrollView *view, float offset);
+/** Set or query keyboard focus for this scroll view. */
+void scroll_view_set_focused(ScrollView *view, bool focused);
+bool scroll_view_is_focused(const ScrollView *view);
 /** Advance smooth scrolling and edge-bounce physics by elapsed seconds. */
 void scroll_view_update(ScrollView *view, float delta_seconds);
 float scroll_view_scroll_offset(const ScrollView *view);

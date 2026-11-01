@@ -19,6 +19,7 @@ struct ScrollView {
     float scrollbar_drag_offset;
     bool scrollbar_dragging;
     bool scrollbar_hovered;
+    bool focused;
 };
 
 static VkDraw *g_draw;
@@ -158,17 +159,30 @@ static void scroll_view_draw(Widget *self, struct VkContext *context)
 
     Rect track;
     Rect thumb;
-    if (!scrollbar_geometry(view, &track, &thumb)) return;
-    static const uint8_t track_color[4] = {96, 101, 110, 30};
-    uint8_t thumb_color[4] = {
-        92, 98, 108, view->scrollbar_hovered || view->scrollbar_dragging
-            ? 190 : 125
-    };
-    vk_draw_rounded_rect(g_draw, track.x, track.y + 2.0f, track.w,
-                         fmaxf(0.0f, track.h - 4.0f), track.w * 0.5f,
-                         0.5f, track_color);
-    vk_draw_rounded_rect(g_draw, thumb.x, thumb.y, thumb.w, thumb.h,
-                         thumb.w * 0.5f, 0.5f, thumb_color);
+    if (scrollbar_geometry(view, &track, &thumb)) {
+        static const uint8_t track_color[4] = {96, 101, 110, 30};
+        uint8_t thumb_color[4] = {
+            92, 98, 108, view->scrollbar_hovered || view->scrollbar_dragging
+                ? 190 : 125
+        };
+        vk_draw_rounded_rect(g_draw, track.x, track.y + 2.0f, track.w,
+                             fmaxf(0.0f, track.h - 4.0f), track.w * 0.5f,
+                             0.5f, track_color);
+        vk_draw_rounded_rect(g_draw, thumb.x, thumb.y, thumb.w, thumb.h,
+                             thumb.w * 0.5f, 0.5f, thumb_color);
+    }
+    if (view->focused) {
+        static const uint8_t focus_color[4] = {0, 122, 255, 190};
+        const Rect *bounds = &self->bounds;
+        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y,
+                             bounds->w, 2.0f, 1.0f, 0.5f, focus_color);
+        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y + bounds->h - 2.0f,
+                             bounds->w, 2.0f, 1.0f, 0.5f, focus_color);
+        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y,
+                             2.0f, bounds->h, 1.0f, 0.5f, focus_color);
+        vk_draw_rounded_rect(g_draw, bounds->x + bounds->w - 2.0f, bounds->y,
+                             2.0f, bounds->h, 1.0f, 0.5f, focus_color);
+    }
 }
 
 static void scroll_view_event(Widget *self, const void *event)
@@ -176,6 +190,41 @@ static void scroll_view_event(Widget *self, const void *event)
     ScrollView *view = (ScrollView *)self;
     const SDL_Event *ev = event;
     if (!view->content || !ev) return;
+
+    if (ev->type == SDL_EVENT_KEY_DOWN && view->focused) {
+        float page_step = fmaxf(view->base.bounds.h -
+                                view->view_style.wheel_step, 0.0f);
+        switch (ev->key.key) {
+        case SDLK_UP:
+            (void)scroll_view_set_scroll_offset(
+                view, view->position - view->view_style.wheel_step);
+            return;
+        case SDLK_DOWN:
+            (void)scroll_view_set_scroll_offset(
+                view, view->position + view->view_style.wheel_step);
+            return;
+        case SDLK_PAGEUP:
+            (void)scroll_view_set_scroll_offset(view,
+                                                view->position - page_step);
+            return;
+        case SDLK_PAGEDOWN:
+            (void)scroll_view_set_scroll_offset(view,
+                                                view->position + page_step);
+            return;
+        case SDLK_HOME:
+            (void)scroll_view_set_scroll_offset(view, 0.0f);
+            return;
+        case SDLK_END:
+            (void)scroll_view_set_scroll_offset(
+                view, scroll_view_max_scroll(view));
+            return;
+        case SDLK_ESCAPE:
+            view->focused = false;
+            return;
+        default:
+            break;
+        }
+    }
 
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         float x = ev->motion.x;
@@ -207,6 +256,12 @@ static void scroll_view_event(Widget *self, const void *event)
         point_in_scrollbar_hit_area(view, (float)ev->button.x,
                                     (float)ev->button.y)) {
         return;
+    }
+
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        ev->button.button == SDL_BUTTON_LEFT) {
+        view->focused = point_in_rect((float)ev->button.x,
+                                      (float)ev->button.y, &self->bounds);
     }
 
     if (ev->type == SDL_EVENT_MOUSE_WHEEL &&
@@ -311,6 +366,16 @@ bool scroll_view_set_scroll_offset(ScrollView *view, float offset)
     view->velocity = 0.0f;
     update_content_bounds(view);
     return true;
+}
+
+void scroll_view_set_focused(ScrollView *view, bool focused)
+{
+    if (view) view->focused = focused;
+}
+
+bool scroll_view_is_focused(const ScrollView *view)
+{
+    return view && view->focused;
 }
 
 void scroll_view_update(ScrollView *view, float delta_seconds)

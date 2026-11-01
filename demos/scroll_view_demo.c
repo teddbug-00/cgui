@@ -114,7 +114,7 @@ static bool create_scene(LayoutContainer **root_out, ScrollView **view_out,
     if (!root) return false;
 
     DemoCard *header = card_create(
-        "ScrollView", "Scroll with the wheel or drag the scrollbar thumb.",
+        "ScrollView", "Click to focus; use arrows, Page Up/Down, Home/End, or drag.",
         header_color, 76.0f);
     if (!header || !layout_container_add_child(root, (Widget *)header)) {
         widget_destroy((Widget *)header);
