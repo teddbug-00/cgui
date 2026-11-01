@@ -94,6 +94,63 @@ int main(void)
     }
 
     widget_destroy(row_widget);
+
+    LayoutContainer *weighted_row = layout_container_create(
+        (Rect){0.0f, 0.0f, 320.0f, 40.0f},
+        (LayoutStyle) {
+            .direction = LAYOUT_HORIZONTAL,
+            .cross_align = LAYOUT_ALIGN_FILL,
+            .spacing = 10.0f,
+            .padding = 10.0f,
+        });
+    Widget *weighted_fixed = widget_create();
+    Widget *weighted_one = widget_create();
+    Widget *weighted_two = widget_create();
+    if (!weighted_row || !weighted_fixed || !weighted_one || !weighted_two) {
+        widget_destroy(layout_container_widget(weighted_row));
+        widget_destroy(weighted_fixed);
+        widget_destroy(weighted_one);
+        widget_destroy(weighted_two);
+        return 1;
+    }
+    weighted_fixed->style.width = 50.0f;
+    if (!layout_container_add_child(weighted_row, weighted_fixed) ||
+        !layout_container_add_child(weighted_row, weighted_one) ||
+        !layout_container_add_child(weighted_row, weighted_two)) {
+        widget_destroy(layout_container_widget(weighted_row));
+        if (!weighted_fixed->parent) widget_destroy(weighted_fixed);
+        if (!weighted_one->parent) widget_destroy(weighted_one);
+        if (!weighted_two->parent) widget_destroy(weighted_two);
+        return 1;
+    }
+    LayoutChildStyle one_style = layout_child_style_default();
+    one_style.flex_weight = 1.0f;
+    one_style.min_size = 40.0f;
+    one_style.max_size = 60.0f;
+    LayoutChildStyle two_style = layout_child_style_default();
+    two_style.flex_weight = 2.0f;
+    two_style.min_size = 50.0f;
+    if (!layout_container_set_child_style(weighted_row, weighted_one,
+                                          one_style) ||
+        !layout_container_set_child_style(weighted_row, weighted_two,
+                                          two_style) ||
+        !near(weighted_one->bounds.w, 60.0f) ||
+        !near(weighted_two->bounds.w, 170.0f)) {
+        fprintf(stderr, "Weighted flex or maximum constraint failed\n");
+        widget_destroy(layout_container_widget(weighted_row));
+        return 1;
+    }
+
+    widget_set_bounds(layout_container_widget(weighted_row),
+                      (Rect){0.0f, 0.0f, 160.0f, 40.0f});
+    if (!near(weighted_one->bounds.w, 40.0f) ||
+        !near(weighted_two->bounds.w, 50.0f)) {
+        fprintf(stderr, "Minimum constraints were not preserved\n");
+        widget_destroy(layout_container_widget(weighted_row));
+        return 1;
+    }
+    widget_destroy(layout_container_widget(weighted_row));
+
     puts("Widget layout tests passed!");
     return 0;
 }

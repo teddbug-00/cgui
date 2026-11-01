@@ -26,17 +26,28 @@ typedef struct LayoutStyle {
     float padding;
 } LayoutStyle;
 
+typedef struct LayoutChildStyle {
+    float flex_weight;
+    float min_size;
+    float max_size;
+} LayoutChildStyle;
+
 typedef struct LayoutContainer LayoutContainer;
 
 /**
- * Child Style.width/height act as fixed-size hints. A zero main-axis hint
- * shares remaining space equally; a zero cross-axis hint fills the container.
+ * Child Style.width/height act as fixed-size hints. A missing main-axis hint
+ * shares remaining space according to flex_weight. min_size/max_size constrain
+ * the main-axis size; max_size zero means unbounded. A zero cross-axis hint
+ * fills the container.
  */
 LayoutStyle layout_style_default(LayoutDirection direction);
+LayoutChildStyle layout_child_style_default(void);
 LayoutContainer *layout_container_create(Rect bounds, LayoutStyle style);
 Widget *layout_container_widget(LayoutContainer *layout);
 bool layout_container_add_child(LayoutContainer *layout, Widget *child);
 bool layout_container_remove_child(LayoutContainer *layout, Widget *child);
+bool layout_container_set_child_style(LayoutContainer *layout, Widget *child,
+                                      LayoutChildStyle style);
 bool layout_container_set_style(LayoutContainer *layout,
                                 const LayoutStyle *style);
 void layout_container_reflow(LayoutContainer *layout);

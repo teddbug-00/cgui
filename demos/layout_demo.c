@@ -205,7 +205,7 @@ static bool create_showcase(LayoutContainer *root, float width, float height)
     }
 
     if (!add_tile(horizontal_column, "HBox / horizontal",
-                  "Padding 20 px  |  Spacing 16 px  |  Fixed + flexible + fixed",
+                  "Padding 20 px  |  Spacing 16 px  |  Fixed + weighted flex",
                   panel_color, 0.0f, 76.0f)) {
         return false;
     }
@@ -220,12 +220,40 @@ static bool create_showcase(LayoutContainer *root, float width, float height)
         widget_destroy(layout_container_widget(hbox));
         return false;
     }
-    if (!add_tile(hbox, "Fixed", "width hint: 120 px",
-                  fixed_color, 120.0f, 0.0f) ||
-        !add_tile(hbox, "Flexible", "takes remaining width",
-                  flexible_color, 0.0f, 0.0f) ||
-        !add_tile(hbox, "Fixed", "width hint: 120 px",
-                  fixed_alt_color, 120.0f, 0.0f)) {
+    DemoTile *fixed_start = tile_create("Fixed", "width hint: 92 px",
+                                        fixed_color, 92.0f, 0.0f);
+    DemoTile *flex_one = tile_create("Flex 1", "weight 1 | max 160 px",
+                                     flexible_color, 0.0f, 0.0f);
+    DemoTile *flex_two = tile_create("Flex 2", "weight 2 | min 100 px",
+                                     fixed_alt_color, 0.0f, 0.0f);
+    DemoTile *fixed_end = tile_create("Fixed", "width hint: 92 px",
+                                      fixed_color, 92.0f, 0.0f);
+    if (!fixed_start || !flex_one || !flex_two || !fixed_end) {
+        widget_destroy((Widget *)fixed_start);
+        widget_destroy((Widget *)flex_one);
+        widget_destroy((Widget *)flex_two);
+        widget_destroy((Widget *)fixed_end);
+        return false;
+    }
+    LayoutChildStyle flex_one_style = layout_child_style_default();
+    flex_one_style.flex_weight = 1.0f;
+    flex_one_style.min_size = 80.0f;
+    flex_one_style.max_size = 160.0f;
+    LayoutChildStyle flex_two_style = layout_child_style_default();
+    flex_two_style.flex_weight = 2.0f;
+    flex_two_style.min_size = 100.0f;
+    if (!layout_container_add_child(hbox, (Widget *)fixed_start) ||
+        !layout_container_add_child(hbox, (Widget *)flex_one) ||
+        !layout_container_add_child(hbox, (Widget *)flex_two) ||
+        !layout_container_add_child(hbox, (Widget *)fixed_end) ||
+        !layout_container_set_child_style(hbox, (Widget *)flex_one,
+                                          flex_one_style) ||
+        !layout_container_set_child_style(hbox, (Widget *)flex_two,
+                                          flex_two_style)) {
+        if (!fixed_start->base.parent) widget_destroy((Widget *)fixed_start);
+        if (!flex_one->base.parent) widget_destroy((Widget *)flex_one);
+        if (!flex_two->base.parent) widget_destroy((Widget *)flex_two);
+        if (!fixed_end->base.parent) widget_destroy((Widget *)fixed_end);
         return false;
     }
 
@@ -344,8 +372,12 @@ int main(void)
                     (Rect){0.0f, 0.0f,
                            (float)context.swapchain_extent.width,
                            (float)context.swapchain_extent.height});
+                resized = false;
             }
-            resized = false;
+            if (resized) {
+                SDL_Delay(16);
+                continue;
+            }
         }
         if (!vk_context_begin_frame(&context)) {
             resized = true;

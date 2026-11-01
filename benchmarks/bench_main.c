@@ -22,6 +22,7 @@
 #include <SDL3/SDL.h>
 
 #include "gui.h"
+#include "layout.h"
 #include "style.h"
 #include "text.h"
 #include "panel.h"
@@ -239,6 +240,40 @@ static void bench_widget_lifecycle(void)
     }
 }
 
+static void bench_layout_reflow(void)
+{
+    print_bench_header("Responsive Layout Reflow");
+
+    LayoutContainer *row = layout_container_create(
+        (Rect){0.0f, 0.0f, 1280.0f, 800.0f},
+        layout_style_default(LAYOUT_HORIZONTAL));
+    if (!row) {
+        fprintf(stderr, "Failed to create layout benchmark container\n");
+        return;
+    }
+
+    for (size_t i = 0; i < 100; ++i) {
+        Widget *child = widget_create();
+        if (!child || !layout_container_add_child(row, child)) {
+            widget_destroy(child);
+            widget_destroy(layout_container_widget(row));
+            fprintf(stderr, "Failed to create layout benchmark children\n");
+            return;
+        }
+    }
+
+    const uint64_t iters = 100000;
+    Widget *root = layout_container_widget(row);
+    uint64_t start = get_time_ns();
+    for (uint64_t i = 0; i < iters; ++i) {
+        float width = i % 2 == 0 ? 1279.0f : 1280.0f;
+        widget_set_bounds(root, (Rect){0.0f, 0.0f, width, 800.0f});
+    }
+    uint64_t elapsed = get_time_ns() - start;
+    print_bench_result("Reflow 100 flexible children", iters, elapsed);
+    widget_destroy(root);
+}
+
 /* ------------------------------------------------------------------ */
 /* 3. Event Processing & Animation Benchmarks                         */
 /* ------------------------------------------------------------------ */
@@ -393,6 +428,7 @@ int main(int argc, char **argv)
 
     bench_text_rendering(engine);
     bench_widget_lifecycle();
+    bench_layout_reflow();
     bench_events_and_animation();
 
     cgui_text_destroy(engine);
