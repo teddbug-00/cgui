@@ -15,6 +15,8 @@ struct ScrollView {
     Widget *content;
     float content_height;
     float scroll_offset;
+    float target_offset;
+    float velocity;
 };
 
 static VkDraw *g_draw;
@@ -39,8 +41,6 @@ float scroll_view_max_scroll(const ScrollView *view)
 static void update_content_bounds(ScrollView *view)
 {
     if (!view || !view->content) return;
-    view->scroll_offset = fminf(view->scroll_offset,
-                                scroll_view_max_scroll(view));
     view->content->bounds = (Rect) {
         .x = view->base.bounds.x,
         .y = view->base.bounds.y - view->scroll_offset,
@@ -52,7 +52,12 @@ static void update_content_bounds(ScrollView *view)
 
 static void scroll_view_layout(Widget *self)
 {
-    update_content_bounds((ScrollView *)self);
+    ScrollView *view = (ScrollView *)self;
+    float maximum = scroll_view_max_scroll(view);
+    view->target_offset = fminf(maximum, fmaxf(0.0f, view->target_offset));
+    view->scroll_offset = fminf(maximum, fmaxf(0.0f, view->scroll_offset));
+    view->velocity = 0.0f;
+    update_content_bounds(view);
 }
 
 static void scroll_view_draw(Widget *self, struct VkContext *context)
@@ -81,9 +86,15 @@ static void scroll_view_event(Widget *self, const void *event)
                       &self->bounds)) {
         float direction = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
             ? 1.0f : -1.0f;
-        (void)scroll_view_set_scroll_offset(
-            view, view->scroll_offset +
-                  direction * (float)ev->wheel.y * view->view_style.wheel_step);
+        float delta = direction * ev->wheel.y * view->view_style.wheel_step;
+        float maximum = scroll_view_max_scroll(view);
+        float requested = view->target_offset + delta;
+        view->target_offset = fminf(maximum, fmaxf(0.0f, requested));
+        if (requested < 0.0f || requested > maximum) {
+            float outward = requested < 0.0f ? requested
+                                                : requested - maximum;
+            view->velocity += outward * 12.0f;
+        }
         return;
     }
     if ((ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
@@ -143,6 +154,10 @@ bool scroll_view_set_content_height(ScrollView *view, float content_height)
         return false;
     }
     view->content_height = content_height;
+    float maximum = scroll_view_max_scroll(view);
+    view->target_offset = fminf(view->target_offset, maximum);
+    view->scroll_offset = fminf(view->scroll_offset, maximum);
+    view->velocity = 0.0f;
     update_content_bounds(view);
     return true;
 }
@@ -152,10 +167,49 @@ bool scroll_view_set_scroll_offset(ScrollView *view, float offset)
     if (!view || !isfinite(offset)) return false;
     float maximum = scroll_view_max_scroll(view);
     float clamped = fminf(maximum, fmaxf(0.0f, offset));
-    if (clamped == view->scroll_offset) return true;
+    view->target_offset = clamped;
     view->scroll_offset = clamped;
+    view->velocity = 0.0f;
     update_content_bounds(view);
     return true;
+}
+
+void scroll_view_update(ScrollView *view, float delta_seconds)
+{
+    if (!view || !view->content || !isfinite(delta_seconds) ||
+        delta_seconds <= 0.0f) {
+        return;
+    }
+
+    float remaining = fminf(delta_seconds, 0.1f);
+    while (remaining > 0.0f) {
+        float dt = fminf(remaining, 1.0f / 120.0f);
+        float maximum = scroll_view_max_scroll(view);
+        float boundary_target = fminf(maximum,
+                                      fmaxf(0.0f, view->target_offset));
+        float acceleration = (boundary_target - view->scroll_offset) * 180.0f -
+                             view->velocity * 26.0f;
+        view->velocity += acceleration * dt;
+        view->scroll_offset += view->velocity * dt;
+
+        if (view->scroll_offset < 0.0f) {
+            float spring = -view->scroll_offset * 240.0f;
+            view->velocity += (spring - view->velocity * 28.0f) * dt;
+        } else if (view->scroll_offset > maximum) {
+            float spring = (maximum - view->scroll_offset) * 240.0f;
+            view->velocity += (spring - view->velocity * 28.0f) * dt;
+        }
+        remaining -= dt;
+    }
+
+    float maximum = scroll_view_max_scroll(view);
+    if (fabsf(view->target_offset - view->scroll_offset) < 0.05f &&
+        fabsf(view->velocity) < 0.5f &&
+        view->scroll_offset >= 0.0f && view->scroll_offset <= maximum) {
+        view->scroll_offset = view->target_offset;
+        view->velocity = 0.0f;
+    }
+    update_content_bounds(view);
 }
 
 float scroll_view_scroll_offset(const ScrollView *view)

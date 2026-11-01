@@ -90,7 +90,8 @@ static DemoCard *card_create(const char *title, const char *detail,
     return card;
 }
 
-static bool create_scene(LayoutContainer **root_out, float width, float height)
+static bool create_scene(LayoutContainer **root_out, ScrollView **view_out,
+                         float width, float height)
 {
     static const uint8_t header_color[4] = {225, 237, 252, 255};
     static const uint8_t colors[][4] = {
@@ -156,6 +157,7 @@ static bool create_scene(LayoutContainer **root_out, float width, float height)
         }
     }
     *root_out = root;
+    *view_out = view;
     return true;
 }
 
@@ -184,6 +186,7 @@ int main(void)
     bool resized = false;
     int result = EXIT_FAILURE;
     LayoutContainer *root = NULL;
+    ScrollView *view = NULL;
 
     if (!vk_context_create(&context, window)) goto cleanup;
     context_created = true;
@@ -199,13 +202,14 @@ int main(void)
         free(words[i]);
         words[i] = NULL;
     }
-    if (!create_scene(&root, (float)context.swapchain_extent.width,
+    if (!create_scene(&root, &view, (float)context.swapchain_extent.width,
                       (float)context.swapchain_extent.height)) {
         fprintf(stderr, "Failed to construct ScrollView showcase\n");
         goto cleanup;
     }
 
     result = EXIT_SUCCESS;
+    Uint64 previous_ticks = SDL_GetTicksNS();
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -236,6 +240,10 @@ int main(void)
                 resized = false;
             }
         }
+        Uint64 now_ticks = SDL_GetTicksNS();
+        float delta_seconds = (float)(now_ticks - previous_ticks) / 1.0e9f;
+        previous_ticks = now_ticks;
+        scroll_view_update(view, delta_seconds);
         if (!vk_context_begin_frame(&context)) {
             resized = true;
             continue;

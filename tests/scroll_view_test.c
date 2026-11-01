@@ -68,9 +68,24 @@ int main(void)
     wheel.wheel.mouse_y = 50.0f;
     wheel.wheel.y = -1.0f;
     view_widget->handle_event(view_widget, &wheel);
+    if (!near(scroll_view_scroll_offset(view), 0.0f)) {
+        fprintf(stderr, "Wheel scrolling did not start smoothly\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    scroll_view_update(view, 1.0f / 60.0f);
+    float first_step = scroll_view_scroll_offset(view);
+    if (!(first_step > 0.0f && first_step < 48.0f)) {
+        fprintf(stderr, "Wheel motion did not interpolate smoothly\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    for (int i = 0; i < 120; ++i) {
+        scroll_view_update(view, 1.0f / 120.0f);
+    }
     if (!near(scroll_view_scroll_offset(view), 48.0f) ||
         !near(content->bounds.y, -28.0f)) {
-        fprintf(stderr, "Wheel scrolling did not update content position\n");
+        fprintf(stderr, "Smooth wheel motion did not settle at its target\n");
         widget_destroy(view_widget);
         return 1;
     }
@@ -86,6 +101,54 @@ int main(void)
     if (!scroll_view_set_scroll_offset(view, 1000.0f) ||
         !near(scroll_view_scroll_offset(view), 200.0f)) {
         fprintf(stderr, "Scroll offset was not clamped to content bounds\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    view_widget->handle_event(view_widget, &wheel);
+    if (!near(scroll_view_scroll_offset(view), 200.0f)) {
+        fprintf(stderr, "Programmatic scroll position was not immediate\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    wheel.wheel.mouse_x = 50.0f;
+    wheel.wheel.y = -1.0f;
+    view_widget->handle_event(view_widget, &wheel);
+    for (int i = 0; i < 10; ++i) {
+        scroll_view_update(view, 1.0f / 60.0f);
+    }
+    if (!(scroll_view_scroll_offset(view) > 200.0f)) {
+        fprintf(stderr, "Bottom edge did not bounce on overscroll\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    for (int i = 0; i < 60; ++i) scroll_view_update(view, 0.1f);
+    if (!near(scroll_view_scroll_offset(view), 200.0f)) {
+        fprintf(stderr, "Bottom edge bounce did not settle\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    if (!scroll_view_set_scroll_offset(view, 0.0f)) {
+        widget_destroy(view_widget);
+        return 1;
+    }
+    wheel.wheel.y = 1.0f;
+    view_widget->handle_event(view_widget, &wheel);
+    for (int i = 0; i < 10; ++i) {
+        scroll_view_update(view, 1.0f / 60.0f);
+    }
+    if (!(scroll_view_scroll_offset(view) < 0.0f)) {
+        fprintf(stderr, "Top edge did not bounce on overscroll\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    for (int i = 0; i < 60; ++i) scroll_view_update(view, 0.1f);
+    if (!near(scroll_view_scroll_offset(view), 0.0f)) {
+        fprintf(stderr, "Top edge bounce did not settle\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    if (!scroll_view_set_scroll_offset(view, 200.0f)) {
         widget_destroy(view_widget);
         return 1;
     }
