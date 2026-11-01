@@ -258,6 +258,74 @@ static float measure_substring_width(const TextField *tf, size_t byte_len)
     return w;
 }
 
+/*
+ * Draw only the portion of text visible within [scroll_x, scroll_x + avail_w].
+ *
+ * Strategy: walk codepoints to find start_byte (first codepoint that is not
+ * fully scrolled off the left) and end_byte (last codepoint boundary that fits
+ * inside the right edge). Render text[start_byte..end_byte] at the correctly
+ * adjusted screen X so it lines up with the rest of the field.
+ *
+ * This avoids needing a Vulkan scissor rect — no GPU state changes required.
+ */
+static void draw_visible_text(const TextField *tf,
+                               float field_inner_x,  /* b->x + padding_x */
+                               float text_y,
+                               float avail_w)
+{
+    if (!g_draw || !tf->text || tf->length == 0) return;
+
+    float scroll    = tf->scroll_x;
+    float right_lim = scroll + avail_w;
+
+    /* --- Find start_byte: first codepoint NOT fully scrolled off left --- */
+    size_t start_byte = 0;
+    float  start_w    = 0.0f;   /* width of text[0..start_byte] */
+    {
+        size_t pos = 0;
+        while (pos < tf->length) {
+            size_t next = utf8_next_codepoint(tf->text, pos, tf->length);
+            float w     = measure_substring_width(tf, next);
+            if (w > scroll) break;   /* this codepoint starts crossing scroll_x */
+            start_byte = next;
+            start_w    = w;
+            pos        = next;
+        }
+    }
+
+    /* --- Find end_byte: include all codepoints that at least partly fit --- */
+    size_t end_byte = start_byte;
+    {
+        size_t pos = start_byte;
+        while (pos < tf->length) {
+            float w_start_of_char = measure_substring_width(tf, pos);
+            if (w_start_of_char >= right_lim) break;  /* fully past right edge */
+            size_t next = utf8_next_codepoint(tf->text, pos, tf->length);
+            end_byte = next;
+            pos      = next;
+        }
+    }
+
+    if (start_byte >= end_byte) return;
+
+    /*
+     * Render text[start_byte..end_byte].
+     * The character at start_byte has its left edge at:
+     *   screen_x = field_inner_x + (start_w - scroll)
+     * which may be slightly left of field_inner_x when partially in view.
+     */
+    float render_x = field_inner_x + (start_w - scroll);
+
+    char saved = tf->text[end_byte];
+    ((char *)tf->text)[end_byte] = '\0';
+
+    vk_draw_text_styled(g_draw, &tf->text[start_byte],
+                        render_x, text_y,
+                        tf->font_size, CGUI_TEXT_REGULAR, tf->text_color);
+
+    ((char *)tf->text)[end_byte] = saved;
+}
+
 static void position_cursor_at_click(TextField *tf, float click_x)
 {
     if (!tf || !tf->text || tf->length == 0 || !g_draw) {
@@ -466,14 +534,16 @@ void text_field_draw(Widget *self, struct VkContext *vk)
         tf->scroll_x = 0.0f;
     }
 
-    float text_x = b->x + tf->padding_x - tf->scroll_x;
-    float text_y = b->y + (b->h - tf->font_size) * 0.5f - 1.0f;
+    float field_inner_x = b->x + tf->padding_x;
+    float text_y        = b->y + (b->h - tf->font_size) * 0.5f - 1.0f;
 
-    /* 3. Text or Placeholder */
+    /* 3. Text or Placeholder — clipped to [field_inner_x, field_inner_x + avail_w] */
     if (tf->length > 0) {
-        vk_draw_text_styled(g_draw, tf->text, text_x, text_y, tf->font_size, CGUI_TEXT_REGULAR, tf->text_color);
+        /* Render only the visible substring so text never bleeds outside the field */
+        draw_visible_text(tf, field_inner_x, text_y, avail_w);
     } else if (tf->placeholder && tf->placeholder[0]) {
-        vk_draw_text_styled(g_draw, tf->placeholder, b->x + tf->padding_x, text_y, tf->font_size, CGUI_TEXT_REGULAR, tf->placeholder_color);
+        vk_draw_text_styled(g_draw, tf->placeholder, field_inner_x, text_y,
+                            tf->font_size, CGUI_TEXT_REGULAR, tf->placeholder_color);
     }
 
     /* 4. Caret / Cursor */
