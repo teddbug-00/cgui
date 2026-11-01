@@ -17,6 +17,7 @@ struct ScrollView {
     float position;
     float velocity;
     float scrollbar_drag_offset;
+    float scrollbar_visible_time;
     bool scrollbar_dragging;
     bool scrollbar_hovered;
     bool focused;
@@ -31,11 +32,27 @@ static VkDraw *g_draw;
 #define SCROLLBAR_WIDTH 6.0f
 #define SCROLLBAR_HIT_WIDTH 16.0f
 #define SCROLLBAR_MIN_THUMB_HEIGHT 24.0f
+#define SCROLLBAR_FADE_DELAY 0.8f
+#define SCROLLBAR_FADE_DURATION 0.3f
 
 static bool point_in_rect(float x, float y, const Rect *rect)
 {
     return x >= rect->x && y >= rect->y &&
            x < rect->x + rect->w && y < rect->y + rect->h;
+}
+
+static void reveal_scrollbar(ScrollView *view)
+{
+    view->scrollbar_visible_time =
+        SCROLLBAR_FADE_DELAY + SCROLLBAR_FADE_DURATION;
+}
+
+static float scrollbar_opacity(const ScrollView *view)
+{
+    if (view->scrollbar_hovered || view->scrollbar_dragging) return 1.0f;
+    if (view->scrollbar_visible_time >= SCROLLBAR_FADE_DURATION) return 1.0f;
+    return fmaxf(0.0f, view->scrollbar_visible_time /
+                        SCROLLBAR_FADE_DURATION);
 }
 
 ScrollViewStyle scroll_view_style_default(void)
@@ -159,29 +176,54 @@ static void scroll_view_draw(Widget *self, struct VkContext *context)
 
     Rect track;
     Rect thumb;
-    if (scrollbar_geometry(view, &track, &thumb)) {
-        static const uint8_t track_color[4] = {96, 101, 110, 30};
+    float opacity = scrollbar_opacity(view);
+    if (opacity > 0.0f && scrollbar_geometry(view, &track, &thumb)) {
+        uint8_t track_color[4] = {96, 101, 110,
+            (uint8_t)(30.0f * opacity)};
         uint8_t thumb_color[4] = {
-            92, 98, 108, view->scrollbar_hovered || view->scrollbar_dragging
-                ? 190 : 125
+            92, 98, 108,
+            (uint8_t)((view->scrollbar_hovered || view->scrollbar_dragging
+                ? 190.0f : 125.0f) * opacity)
         };
-        vk_draw_rounded_rect(g_draw, track.x, track.y + 2.0f, track.w,
-                             fmaxf(0.0f, track.h - 4.0f), track.w * 0.5f,
+        float width = view->scrollbar_hovered || view->scrollbar_dragging
+            ? 8.0f : SCROLLBAR_WIDTH;
+        float x = view->base.bounds.x + view->base.bounds.w - width - 2.0f;
+        if (x < view->base.bounds.x) x = view->base.bounds.x;
+        vk_draw_rounded_rect(g_draw, x, track.y + 2.0f, width,
+                             fmaxf(0.0f, track.h - 4.0f), width * 0.5f,
                              0.5f, track_color);
-        vk_draw_rounded_rect(g_draw, thumb.x, thumb.y, thumb.w, thumb.h,
-                             thumb.w * 0.5f, 0.5f, thumb_color);
+        vk_draw_rounded_rect(g_draw, x, thumb.y, width, thumb.h,
+                             width * 0.5f, 0.5f, thumb_color);
     }
     if (view->focused) {
-        static const uint8_t focus_color[4] = {0, 122, 255, 190};
+        static const uint8_t focus_color[4] = {0, 122, 255, 220};
         const Rect *bounds = &self->bounds;
-        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y,
-                             bounds->w, 2.0f, 1.0f, 0.5f, focus_color);
-        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y + bounds->h - 2.0f,
-                             bounds->w, 2.0f, 1.0f, 0.5f, focus_color);
-        vk_draw_rounded_rect(g_draw, bounds->x, bounds->y,
-                             2.0f, bounds->h, 1.0f, 0.5f, focus_color);
-        vk_draw_rounded_rect(g_draw, bounds->x + bounds->w - 2.0f, bounds->y,
-                             2.0f, bounds->h, 1.0f, 0.5f, focus_color);
+        float length = fminf(12.0f, fminf(bounds->w, bounds->h) * 0.2f);
+        float thickness = fminf(2.0f, length * 0.18f);
+        float inset = 2.0f;
+        if (length > thickness && thickness > 0.0f) {
+            float left = bounds->x + inset;
+            float right = bounds->x + bounds->w - inset - length;
+            float top = bounds->y + inset;
+            float bottom = bounds->y + bounds->h - inset - length;
+            float radius = thickness * 0.5f;
+            vk_draw_rounded_rect(g_draw, left, top, length, thickness,
+                                 radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, left, top, thickness, length,
+                                 radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, right, top, length, thickness,
+                                 radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, right + length - thickness, top,
+                                 thickness, length, radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, left, bottom + length - thickness,
+                                 length, thickness, radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, left, bottom, thickness, length,
+                                 radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, right, bottom + length - thickness,
+                                 length, thickness, radius, 0.5f, focus_color);
+            vk_draw_rounded_rect(g_draw, right + length - thickness, bottom,
+                                 thickness, length, radius, 0.5f, focus_color);
+        }
     }
 }
 
@@ -243,7 +285,10 @@ static void scroll_view_event(Widget *self, const void *event)
             return;
         }
         view->scrollbar_hovered = point_in_scrollbar_hit_area(view, x, y);
-        if (view->scrollbar_hovered) return;
+        if (view->scrollbar_hovered) {
+            reveal_scrollbar(view);
+            return;
+        }
     }
 
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
@@ -270,6 +315,7 @@ static void scroll_view_event(Widget *self, const void *event)
             ? 1.0f : -1.0f;
         float delta = direction * ev->wheel.y * view->view_style.wheel_step;
         view->velocity += delta * SCROLL_FRICTION;
+        reveal_scrollbar(view);
         return;
     }
 
@@ -279,6 +325,7 @@ static void scroll_view_event(Widget *self, const void *event)
                       &self->bounds) &&
         point_in_scrollbar_hit_area(view, (float)ev->button.x,
                                     (float)ev->button.y)) {
+        reveal_scrollbar(view);
         Rect track;
         Rect thumb;
         if (!scrollbar_geometry(view, &track, &thumb)) return;
@@ -364,6 +411,7 @@ bool scroll_view_set_scroll_offset(ScrollView *view, float offset)
     float maximum = scroll_view_max_scroll(view);
     view->position = fminf(maximum, fmaxf(0.0f, offset));
     view->velocity = 0.0f;
+    reveal_scrollbar(view);
     update_content_bounds(view);
     return true;
 }
@@ -383,6 +431,11 @@ void scroll_view_update(ScrollView *view, float delta_seconds)
     if (!view || !view->content || !isfinite(delta_seconds) ||
         delta_seconds <= 0.0f) {
         return;
+    }
+
+    if (!view->scrollbar_hovered && !view->scrollbar_dragging) {
+        view->scrollbar_visible_time =
+            fmaxf(0.0f, view->scrollbar_visible_time - delta_seconds);
     }
 
     float remaining = fminf(delta_seconds, 0.1f);
