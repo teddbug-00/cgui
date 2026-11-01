@@ -324,6 +324,95 @@ int main(void)
         return 1;
     }
 
+    if (!scroll_view_set_content_width(view, 400.0f) ||
+        !near(scroll_view_max_scroll_x(view), 200.0f) ||
+        !near(content->bounds.w, 400.0f)) {
+        fprintf(stderr, "Horizontal content extent was not applied\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    wheel.wheel.mouse_x = 50.0f;
+    wheel.wheel.mouse_y = 50.0f;
+    wheel.wheel.x = 1.0f;
+    wheel.wheel.y = 0.0f;
+    view_widget->handle_event(view_widget, &wheel);
+    for (int i = 0; i < 10; ++i) {
+        scroll_view_update(view, 1.0f / 60.0f);
+    }
+    if (!(scroll_view_scroll_offset_x(view) > 0.0f)) {
+        fprintf(stderr, "Horizontal wheel input did not scroll content\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    scroll_view_set_focused(view, true);
+    key.key.key = SDLK_RIGHT;
+    float before_key_scroll_x = scroll_view_scroll_offset_x(view);
+    view_widget->handle_event(view_widget, &key);
+    if (!(scroll_view_scroll_offset_x(view) > before_key_scroll_x)) {
+        fprintf(stderr, "Right arrow did not scroll horizontally\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    key.key.key = SDLK_LEFT;
+    view_widget->handle_event(view_widget, &key);
+    if (!near(scroll_view_scroll_offset_x(view), before_key_scroll_x)) {
+        fprintf(stderr, "Left arrow did not scroll horizontally\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 150;
+    pointer.button.y = 240;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!near(scroll_view_scroll_offset_x(view), 200.0f)) {
+        fprintf(stderr, "Horizontal scrollbar track click did not page content\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    if (!scroll_view_set_scroll_offset_x(view, 0.0f)) {
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.button.x = 30;
+    view_widget->handle_event(view_widget, &pointer);
+    pointer.type = SDL_EVENT_MOUSE_MOTION;
+    pointer.motion.x = 100.0f;
+    pointer.motion.y = 240.0f;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!(scroll_view_scroll_offset_x(view) > 100.0f)) {
+        fprintf(stderr, "Horizontal scrollbar thumb did not drag\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 300;
+    pointer.button.y = 300;
+    view_widget->handle_event(view_widget, &pointer);
+
+    if (!scroll_view_set_scroll_offset_x(view, 200.0f) ||
+        !scroll_view_set_content_width(view, 100.0f) ||
+        !near(scroll_view_max_scroll_x(view), 0.0f) ||
+        !near(scroll_view_scroll_offset_x(view), 0.0f) ||
+        !near(content->bounds.x, 0.0f)) {
+        fprintf(stderr, "Content shrink did not reset horizontal scrolling\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    view_widget->handle_event(view_widget, &wheel);
+    for (int i = 0; i < 10; ++i) {
+        scroll_view_update(view, 1.0f / 60.0f);
+    }
+    if (!near(scroll_view_scroll_offset_x(view), 0.0f)) {
+        fprintf(stderr, "Horizontal wheel moved content without overflow\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
     puts("ScrollView tests passed!");
     widget_destroy(view_widget);
     return 0;

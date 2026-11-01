@@ -1,5 +1,5 @@
 /**
- * scroll_view.c - Clipped vertical scrolling viewport.
+ * scroll_view.c - Clipped two-axis scrolling viewport.
  */
 
 #include "scroll_view.h"
@@ -13,13 +13,17 @@ struct ScrollView {
     Widget base;
     ScrollViewStyle view_style;
     Widget *content;
+    float content_width;
     float content_height;
-    float position;
-    float velocity;
+    float position_x;
+    float position_y;
+    float velocity_x;
+    float velocity_y;
     float scrollbar_drag_offset;
     float scrollbar_visible_time;
-    bool scrollbar_dragging;
-    bool scrollbar_hovered;
+    int scrollbar_drag_axis;
+    bool scrollbar_hovered_x;
+    bool scrollbar_hovered_y;
     bool focused;
 };
 
@@ -34,6 +38,8 @@ static VkDraw *g_draw;
 #define SCROLLBAR_MIN_THUMB_HEIGHT 24.0f
 #define SCROLLBAR_FADE_DELAY 0.8f
 #define SCROLLBAR_FADE_DURATION 0.3f
+#define SCROLLBAR_VERTICAL 1
+#define SCROLLBAR_HORIZONTAL 2
 
 static bool point_in_rect(float x, float y, const Rect *rect)
 {
@@ -49,7 +55,8 @@ static void reveal_scrollbar(ScrollView *view)
 
 static float scrollbar_opacity(const ScrollView *view)
 {
-    if (view->scrollbar_hovered || view->scrollbar_dragging) return 1.0f;
+    if (view->scrollbar_hovered_x || view->scrollbar_hovered_y ||
+        view->scrollbar_drag_axis != 0) return 1.0f;
     if (view->scrollbar_visible_time >= SCROLLBAR_FADE_DURATION) return 1.0f;
     return fmaxf(0.0f, view->scrollbar_visible_time /
                         SCROLLBAR_FADE_DURATION);
@@ -66,6 +73,12 @@ float scroll_view_max_scroll(const ScrollView *view)
     return fmaxf(0.0f, view->content_height - view->base.bounds.h);
 }
 
+float scroll_view_max_scroll_x(const ScrollView *view)
+{
+    if (!view) return 0.0f;
+    return fmaxf(0.0f, view->content_width - view->base.bounds.w);
+}
+
 static float rubber_band(float distance, float dimension)
 {
     if (distance <= 0.0f || dimension <= 0.0f) return 0.0f;
@@ -73,66 +86,109 @@ static float rubber_band(float distance, float dimension)
         (distance * SCROLL_RUBBER_BAND_FACTOR / dimension + 1.0f));
 }
 
-static float displayed_scroll_offset(const ScrollView *view)
+static float displayed_axis_offset(float position, float maximum,
+                                   float dimension)
 {
-    float maximum = scroll_view_max_scroll(view);
-    if (view->position < 0.0f) {
-        return -rubber_band(-view->position, view->base.bounds.h);
+    if (position < 0.0f) {
+        return -rubber_band(-position, dimension);
     }
-    if (view->position > maximum) {
-        return maximum + rubber_band(view->position - maximum,
-                                     view->base.bounds.h);
+    if (position > maximum) {
+        return maximum + rubber_band(position - maximum, dimension);
     }
-    return view->position;
+    return position;
 }
 
-static bool scrollbar_geometry(const ScrollView *view, Rect *track,
+static bool scrollbar_geometry(const ScrollView *view, int axis, Rect *track,
                                Rect *thumb)
 {
-    float maximum = scroll_view_max_scroll(view);
-    if (maximum <= 0.0f || view->base.bounds.w <= 0.0f ||
-        view->base.bounds.h <= 0.0f) {
+    bool horizontal = axis == SCROLLBAR_HORIZONTAL;
+    float viewport = horizontal ? view->base.bounds.w : view->base.bounds.h;
+    float content = horizontal ? view->content_width : view->content_height;
+    float maximum = horizontal ? scroll_view_max_scroll_x(view)
+                               : scroll_view_max_scroll(view);
+    float position = horizontal ? view->position_x : view->position_y;
+    float cross_viewport = horizontal ? view->base.bounds.h
+                                      : view->base.bounds.w;
+    if (maximum <= 0.0f || viewport <= 0.0f || cross_viewport <= 0.0f) {
         return false;
     }
 
-    float width = fminf(SCROLLBAR_WIDTH, view->base.bounds.w);
-    float track_x = view->base.bounds.x + view->base.bounds.w - width - 3.0f;
-    if (track_x < view->base.bounds.x) track_x = view->base.bounds.x;
-    *track = (Rect) {
-        .x = track_x,
-        .y = view->base.bounds.y,
-        .w = width,
-        .h = view->base.bounds.h,
-    };
-
-    float thumb_height = fmaxf(SCROLLBAR_MIN_THUMB_HEIGHT,
-        track->h * track->h / view->content_height);
-    thumb_height = fminf(thumb_height, track->h);
-    float travel = track->h - thumb_height;
-    float offset = fminf(maximum, fmaxf(0.0f, view->position));
-    *thumb = (Rect) {
-        .x = track->x,
-        .y = track->y + (maximum > 0.0f ? offset / maximum * travel : 0.0f),
-        .w = track->w,
-        .h = thumb_height,
-    };
+    if (horizontal) {
+        float track_width = viewport;
+        if (scroll_view_max_scroll(view) > 0.0f) {
+            track_width = fmaxf(0.0f, track_width - SCROLLBAR_HIT_WIDTH);
+        }
+        float thumb_length = fmaxf(SCROLLBAR_MIN_THUMB_HEIGHT,
+                                   track_width * viewport / content);
+        thumb_length = fminf(thumb_length, track_width);
+        float travel = track_width - thumb_length;
+        float thumb_offset = maximum > 0.0f
+            ? fminf(maximum, fmaxf(0.0f, position)) / maximum * travel : 0.0f;
+        *track = (Rect) {
+            .x = view->base.bounds.x,
+            .y = view->base.bounds.y + view->base.bounds.h -
+                 fminf(SCROLLBAR_WIDTH, cross_viewport) - 3.0f,
+            .w = track_width,
+            .h = fminf(SCROLLBAR_WIDTH, cross_viewport),
+        };
+        *thumb = (Rect) {
+            .x = track->x + thumb_offset,
+            .y = track->y,
+            .w = fminf(thumb_length, track->w),
+            .h = track->h,
+        };
+    } else {
+        float track_height = viewport;
+        if (scroll_view_max_scroll_x(view) > 0.0f) {
+            track_height = fmaxf(0.0f, track_height - SCROLLBAR_HIT_WIDTH);
+        }
+        float thumb_length = fmaxf(SCROLLBAR_MIN_THUMB_HEIGHT,
+                                   track_height * viewport / content);
+        thumb_length = fminf(thumb_length, track_height);
+        float travel = track_height - thumb_length;
+        float thumb_offset = maximum > 0.0f
+            ? fminf(maximum, fmaxf(0.0f, position)) / maximum * travel : 0.0f;
+        *track = (Rect) {
+            .x = view->base.bounds.x + view->base.bounds.w -
+                 fminf(SCROLLBAR_WIDTH, cross_viewport) - 3.0f,
+            .y = view->base.bounds.y,
+            .w = fminf(SCROLLBAR_WIDTH, cross_viewport),
+            .h = track_height,
+        };
+        *thumb = (Rect) {
+            .x = track->x,
+            .y = track->y + thumb_offset,
+            .w = track->w,
+            .h = fminf(thumb_length, track->h),
+        };
+    }
     return true;
 }
 
-static bool point_in_scrollbar_hit_area(const ScrollView *view, float x,
-                                        float y)
+static bool point_in_scrollbar_hit_area(const ScrollView *view, int axis,
+                                        float x, float y)
 {
     Rect track;
     Rect thumb;
-    if (!scrollbar_geometry(view, &track, &thumb)) return false;
-    Rect hit_area = {
-        .x = fmaxf(view->base.bounds.x,
-                   view->base.bounds.x + view->base.bounds.w -
-                   SCROLLBAR_HIT_WIDTH),
-        .y = track.y,
-        .w = fminf(SCROLLBAR_HIT_WIDTH, view->base.bounds.w),
-        .h = track.h,
-    };
+    if (!scrollbar_geometry(view, axis, &track, &thumb)) return false;
+    Rect hit_area;
+    if (axis == SCROLLBAR_HORIZONTAL) {
+        hit_area = (Rect) {
+            .x = view->base.bounds.x,
+            .y = view->base.bounds.y + view->base.bounds.h -
+                 fminf(SCROLLBAR_HIT_WIDTH, view->base.bounds.h),
+            .w = track.w,
+            .h = fminf(SCROLLBAR_HIT_WIDTH, view->base.bounds.h),
+        };
+    } else {
+        hit_area = (Rect) {
+            .x = view->base.bounds.x + view->base.bounds.w -
+                 fminf(SCROLLBAR_HIT_WIDTH, view->base.bounds.w),
+            .y = view->base.bounds.y,
+            .w = fminf(SCROLLBAR_HIT_WIDTH, view->base.bounds.w),
+            .h = track.h,
+        };
+    }
     return point_in_rect(x, y, &hit_area);
 }
 
@@ -140,9 +196,13 @@ static void update_content_bounds(ScrollView *view)
 {
     if (!view || !view->content) return;
     view->content->bounds = (Rect) {
-        .x = view->base.bounds.x,
-        .y = view->base.bounds.y - displayed_scroll_offset(view),
-        .w = view->base.bounds.w,
+        .x = view->base.bounds.x - displayed_axis_offset(
+            view->position_x, scroll_view_max_scroll_x(view),
+            view->base.bounds.w),
+        .y = view->base.bounds.y - displayed_axis_offset(
+            view->position_y, scroll_view_max_scroll(view),
+            view->base.bounds.h),
+        .w = fmaxf(view->content_width, view->base.bounds.w),
         .h = fmaxf(view->content_height, view->base.bounds.h),
     };
     widget_layout(view->content);
@@ -151,9 +211,12 @@ static void update_content_bounds(ScrollView *view)
 static void scroll_view_layout(Widget *self)
 {
     ScrollView *view = (ScrollView *)self;
-    float maximum = scroll_view_max_scroll(view);
-    view->position = fminf(maximum, fmaxf(0.0f, view->position));
-    view->velocity = 0.0f;
+    view->position_x = fminf(scroll_view_max_scroll_x(view),
+                             fmaxf(0.0f, view->position_x));
+    view->position_y = fminf(scroll_view_max_scroll(view),
+                             fmaxf(0.0f, view->position_y));
+    view->velocity_x = 0.0f;
+    view->velocity_y = 0.0f;
     update_content_bounds(view);
 }
 
@@ -174,26 +237,43 @@ static void scroll_view_draw(Widget *self, struct VkContext *context)
         vk_draw_clip_pop(g_draw);
     }
 
-    Rect track;
-    Rect thumb;
     float opacity = scrollbar_opacity(view);
-    if (opacity > 0.0f && scrollbar_geometry(view, &track, &thumb)) {
-        uint8_t track_color[4] = {96, 101, 110,
-            (uint8_t)(30.0f * opacity)};
-        uint8_t thumb_color[4] = {
-            92, 98, 108,
-            (uint8_t)((view->scrollbar_hovered || view->scrollbar_dragging
-                ? 190.0f : 125.0f) * opacity)
-        };
-        float width = view->scrollbar_hovered || view->scrollbar_dragging
-            ? 8.0f : SCROLLBAR_WIDTH;
-        float x = view->base.bounds.x + view->base.bounds.w - width - 2.0f;
-        if (x < view->base.bounds.x) x = view->base.bounds.x;
-        vk_draw_rounded_rect(g_draw, x, track.y + 2.0f, width,
-                             fmaxf(0.0f, track.h - 4.0f), width * 0.5f,
-                             0.5f, track_color);
-        vk_draw_rounded_rect(g_draw, x, thumb.y, width, thumb.h,
-                             width * 0.5f, 0.5f, thumb_color);
+    if (opacity > 0.0f) {
+        for (int axis = SCROLLBAR_VERTICAL;
+             axis <= SCROLLBAR_HORIZONTAL; ++axis) {
+            Rect track;
+            Rect thumb;
+            if (!scrollbar_geometry(view, axis, &track, &thumb)) continue;
+            bool horizontal = axis == SCROLLBAR_HORIZONTAL;
+            bool active = view->scrollbar_drag_axis == axis ||
+                (horizontal ? view->scrollbar_hovered_x
+                            : view->scrollbar_hovered_y);
+            uint8_t track_color[4] = {96, 101, 110,
+                (uint8_t)(30.0f * opacity)};
+            uint8_t thumb_color[4] = {
+                92, 98, 108, (uint8_t)((active ? 190.0f : 125.0f) * opacity)
+            };
+            float width = active ? 8.0f : SCROLLBAR_WIDTH;
+            if (horizontal) {
+                float y = view->base.bounds.y + view->base.bounds.h -
+                          width - 2.0f;
+                if (y < view->base.bounds.y) y = view->base.bounds.y;
+                vk_draw_rounded_rect(g_draw, track.x + 2.0f, y,
+                                     fmaxf(0.0f, track.w - 4.0f), width,
+                                     width * 0.5f, 0.5f, track_color);
+                vk_draw_rounded_rect(g_draw, thumb.x, y, thumb.w, width,
+                                     width * 0.5f, 0.5f, thumb_color);
+            } else {
+                float x = view->base.bounds.x + view->base.bounds.w -
+                          width - 2.0f;
+                if (x < view->base.bounds.x) x = view->base.bounds.x;
+                vk_draw_rounded_rect(g_draw, x, track.y + 2.0f, width,
+                                     fmaxf(0.0f, track.h - 4.0f),
+                                     width * 0.5f, 0.5f, track_color);
+                vk_draw_rounded_rect(g_draw, x, thumb.y, width, thumb.h,
+                                     width * 0.5f, 0.5f, thumb_color);
+            }
+        }
     }
     if (view->focused) {
         static const uint8_t focus_color[4] = {0, 122, 255, 220};
@@ -239,19 +319,27 @@ static void scroll_view_event(Widget *self, const void *event)
         switch (ev->key.key) {
         case SDLK_UP:
             (void)scroll_view_set_scroll_offset(
-                view, view->position - view->view_style.wheel_step);
+                view, view->position_y - view->view_style.wheel_step);
             return;
         case SDLK_DOWN:
             (void)scroll_view_set_scroll_offset(
-                view, view->position + view->view_style.wheel_step);
+                view, view->position_y + view->view_style.wheel_step);
+            return;
+        case SDLK_LEFT:
+            (void)scroll_view_set_scroll_offset_x(
+                view, view->position_x - view->view_style.wheel_step);
+            return;
+        case SDLK_RIGHT:
+            (void)scroll_view_set_scroll_offset_x(
+                view, view->position_x + view->view_style.wheel_step);
             return;
         case SDLK_PAGEUP:
             (void)scroll_view_set_scroll_offset(view,
-                                                view->position - page_step);
+                                                view->position_y - page_step);
             return;
         case SDLK_PAGEDOWN:
             (void)scroll_view_set_scroll_offset(view,
-                                                view->position + page_step);
+                                                view->position_y + page_step);
             return;
         case SDLK_HOME:
             (void)scroll_view_set_scroll_offset(view, 0.0f);
@@ -271,35 +359,53 @@ static void scroll_view_event(Widget *self, const void *event)
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         float x = ev->motion.x;
         float y = ev->motion.y;
-        if (view->scrollbar_dragging) {
+        if (view->scrollbar_drag_axis != 0) {
+            int axis = view->scrollbar_drag_axis;
             Rect track;
             Rect thumb;
-            if (scrollbar_geometry(view, &track, &thumb)) {
-                float travel = track.h - thumb.h;
-                float thumb_top = y - view->scrollbar_drag_offset;
+            if (scrollbar_geometry(view, axis, &track, &thumb)) {
+                bool horizontal = axis == SCROLLBAR_HORIZONTAL;
+                float travel = horizontal ? track.w - thumb.w
+                                          : track.h - thumb.h;
+                float pointer = horizontal ? x : y;
+                float origin = horizontal ? track.x : track.y;
+                float thumb_top = pointer - view->scrollbar_drag_offset;
                 float fraction = travel > 0.0f
-                    ? (thumb_top - track.y) / travel : 0.0f;
-                (void)scroll_view_set_scroll_offset(
-                    view, fraction * scroll_view_max_scroll(view));
+                    ? (thumb_top - origin) / travel : 0.0f;
+                if (horizontal) {
+                    (void)scroll_view_set_scroll_offset_x(
+                        view, fraction * scroll_view_max_scroll_x(view));
+                } else {
+                    (void)scroll_view_set_scroll_offset(
+                        view, fraction * scroll_view_max_scroll(view));
+                }
             }
             return;
         }
-        view->scrollbar_hovered = point_in_scrollbar_hit_area(view, x, y);
-        if (view->scrollbar_hovered) {
+        view->scrollbar_hovered_y = point_in_scrollbar_hit_area(
+            view, SCROLLBAR_VERTICAL, x, y);
+        view->scrollbar_hovered_x = point_in_scrollbar_hit_area(
+            view, SCROLLBAR_HORIZONTAL, x, y);
+        if (view->scrollbar_hovered_x || view->scrollbar_hovered_y) {
             reveal_scrollbar(view);
             return;
         }
     }
 
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
-        ev->button.button == SDL_BUTTON_LEFT && view->scrollbar_dragging) {
-        view->scrollbar_dragging = false;
+        ev->button.button == SDL_BUTTON_LEFT &&
+        view->scrollbar_drag_axis != 0) {
+        view->scrollbar_drag_axis = 0;
         return;
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         ev->button.button == SDL_BUTTON_LEFT &&
-        point_in_scrollbar_hit_area(view, (float)ev->button.x,
-                                    (float)ev->button.y)) {
+        (point_in_scrollbar_hit_area(view, SCROLLBAR_VERTICAL,
+                                     (float)ev->button.x,
+                                     (float)ev->button.y) ||
+         point_in_scrollbar_hit_area(view, SCROLLBAR_HORIZONTAL,
+                                     (float)ev->button.x,
+                                     (float)ev->button.y))) {
         return;
     }
 
@@ -312,9 +418,15 @@ static void scroll_view_event(Widget *self, const void *event)
     if (ev->type == SDL_EVENT_MOUSE_WHEEL &&
         point_in_rect(ev->wheel.mouse_x, ev->wheel.mouse_y, &self->bounds)) {
         float direction = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
-            ? 1.0f : -1.0f;
-        float delta = direction * ev->wheel.y * view->view_style.wheel_step;
-        view->velocity += delta * SCROLL_FRICTION;
+            ? -1.0f : 1.0f;
+        if (scroll_view_max_scroll_x(view) > 0.0f) {
+            view->velocity_x += direction * ev->wheel.x *
+                                view->view_style.wheel_step * SCROLL_FRICTION;
+        }
+        if (scroll_view_max_scroll(view) > 0.0f) {
+            view->velocity_y -= direction * ev->wheel.y *
+                                view->view_style.wheel_step * SCROLL_FRICTION;
+        }
         reveal_scrollbar(view);
         return;
     }
@@ -323,21 +435,42 @@ static void scroll_view_event(Widget *self, const void *event)
         ev->button.button == SDL_BUTTON_LEFT &&
         point_in_rect((float)ev->button.x, (float)ev->button.y,
                       &self->bounds) &&
-        point_in_scrollbar_hit_area(view, (float)ev->button.x,
-                                    (float)ev->button.y)) {
+        (point_in_scrollbar_hit_area(view, SCROLLBAR_VERTICAL,
+                                     (float)ev->button.x,
+                                     (float)ev->button.y) ||
+         point_in_scrollbar_hit_area(view, SCROLLBAR_HORIZONTAL,
+                                     (float)ev->button.x,
+                                     (float)ev->button.y))) {
+        int axis = point_in_scrollbar_hit_area(
+            view, SCROLLBAR_VERTICAL, (float)ev->button.x,
+            (float)ev->button.y) ? SCROLLBAR_VERTICAL
+                                 : SCROLLBAR_HORIZONTAL;
         reveal_scrollbar(view);
         Rect track;
         Rect thumb;
-        if (!scrollbar_geometry(view, &track, &thumb)) return;
-        float y = (float)ev->button.y;
-        if (point_in_rect((float)ev->button.x, y, &thumb)) {
-            view->scrollbar_dragging = true;
-            view->scrollbar_drag_offset = y - thumb.y;
-            view->velocity = 0.0f;
+        if (!scrollbar_geometry(view, axis, &track, &thumb)) return;
+        bool horizontal = axis == SCROLLBAR_HORIZONTAL;
+        float pointer = horizontal ? (float)ev->button.x
+                                   : (float)ev->button.y;
+        float thumb_start = horizontal ? thumb.x : thumb.y;
+        float viewport = horizontal ? view->base.bounds.w
+                                    : view->base.bounds.h;
+        float position = horizontal ? view->position_x : view->position_y;
+        float offset = pointer - thumb_start;
+        if (point_in_rect((float)ev->button.x, (float)ev->button.y, &thumb)) {
+            view->scrollbar_drag_axis = axis;
+            view->scrollbar_drag_offset = offset;
+            if (horizontal) view->velocity_x = 0.0f;
+            else view->velocity_y = 0.0f;
         } else {
-            float direction = y < thumb.y ? -1.0f : 1.0f;
-            (void)scroll_view_set_scroll_offset(
-                view, view->position + direction * view->base.bounds.h);
+            float direction = pointer < thumb_start ? -1.0f : 1.0f;
+            if (horizontal) {
+                (void)scroll_view_set_scroll_offset_x(
+                    view, position + direction * viewport);
+            } else {
+                (void)scroll_view_set_scroll_offset(
+                    view, position + direction * viewport);
+            }
         }
         return;
     }
@@ -364,6 +497,7 @@ ScrollView *scroll_view_create(Rect bounds, ScrollViewStyle style)
     ScrollView *view = calloc(1, sizeof(*view));
     if (!view) return NULL;
     view->base.bounds = bounds;
+    view->content_width = bounds.w;
     view->base.style = style_default();
     view->base.draw = scroll_view_draw;
     view->base.handle_event = scroll_view_event;
@@ -387,6 +521,7 @@ bool scroll_view_set_content(ScrollView *view, Widget *content,
         return false;
     }
     view->content = content;
+    view->content_width = view->base.bounds.w;
     view->content_height = content_height;
     update_content_bounds(view);
     return true;
@@ -399,8 +534,22 @@ bool scroll_view_set_content_height(ScrollView *view, float content_height)
         return false;
     }
     view->content_height = content_height;
-    view->position = fminf(view->position, scroll_view_max_scroll(view));
-    view->velocity = 0.0f;
+    view->position_y = fminf(view->position_y, scroll_view_max_scroll(view));
+    view->velocity_y = 0.0f;
+    update_content_bounds(view);
+    return true;
+}
+
+bool scroll_view_set_content_width(ScrollView *view, float content_width)
+{
+    if (!view || !view->content || !isfinite(content_width) ||
+        content_width < 0.0f) {
+        return false;
+    }
+    view->content_width = content_width;
+    view->position_x = fminf(view->position_x,
+                             scroll_view_max_scroll_x(view));
+    view->velocity_x = 0.0f;
     update_content_bounds(view);
     return true;
 }
@@ -409,8 +558,19 @@ bool scroll_view_set_scroll_offset(ScrollView *view, float offset)
 {
     if (!view || !isfinite(offset)) return false;
     float maximum = scroll_view_max_scroll(view);
-    view->position = fminf(maximum, fmaxf(0.0f, offset));
-    view->velocity = 0.0f;
+    view->position_y = fminf(maximum, fmaxf(0.0f, offset));
+    view->velocity_y = 0.0f;
+    reveal_scrollbar(view);
+    update_content_bounds(view);
+    return true;
+}
+
+bool scroll_view_set_scroll_offset_x(ScrollView *view, float offset)
+{
+    if (!view || !isfinite(offset)) return false;
+    float maximum = scroll_view_max_scroll_x(view);
+    view->position_x = fminf(maximum, fmaxf(0.0f, offset));
+    view->velocity_x = 0.0f;
     reveal_scrollbar(view);
     update_content_bounds(view);
     return true;
@@ -426,6 +586,40 @@ bool scroll_view_is_focused(const ScrollView *view)
     return view && view->focused;
 }
 
+static void update_scroll_axis(float *position, float *velocity,
+                               float maximum, float dt)
+{
+    if (*position < 0.0f) {
+        float acceleration = -SCROLL_SPRING_STIFFNESS * *position -
+                            SCROLL_SPRING_DAMPING * *velocity;
+        *velocity += acceleration * dt;
+        *position += *velocity * dt;
+    } else if (*position > maximum) {
+        float displacement = *position - maximum;
+        float acceleration = -SCROLL_SPRING_STIFFNESS * displacement -
+                            SCROLL_SPRING_DAMPING * *velocity;
+        *velocity += acceleration * dt;
+        *position += *velocity * dt;
+    } else {
+        float decay = expf(-SCROLL_FRICTION * dt);
+        *position += *velocity * (1.0f - decay) / SCROLL_FRICTION;
+        *velocity *= decay;
+    }
+
+    if (*position < 0.0f && fabsf(*position) < 0.01f) {
+        *position = 0.0f;
+        *velocity = 0.0f;
+    } else if (*position > maximum &&
+               fabsf(*position - maximum) < 0.01f) {
+        *position = maximum;
+        *velocity = 0.0f;
+    }
+    if (fabsf(*velocity) < 0.05f &&
+        *position >= 0.0f && *position <= maximum) {
+        *velocity = 0.0f;
+    }
+}
+
 void scroll_view_update(ScrollView *view, float delta_seconds)
 {
     if (!view || !view->content || !isfinite(delta_seconds) ||
@@ -433,7 +627,8 @@ void scroll_view_update(ScrollView *view, float delta_seconds)
         return;
     }
 
-    if (!view->scrollbar_hovered && !view->scrollbar_dragging) {
+    if (!view->scrollbar_hovered_x && !view->scrollbar_hovered_y &&
+        view->scrollbar_drag_axis == 0) {
         view->scrollbar_visible_time =
             fmaxf(0.0f, view->scrollbar_visible_time - delta_seconds);
     }
@@ -441,46 +636,32 @@ void scroll_view_update(ScrollView *view, float delta_seconds)
     float remaining = fminf(delta_seconds, 0.1f);
     while (remaining > 0.0f) {
         float dt = fminf(remaining, 1.0f / 120.0f);
-        float maximum = scroll_view_max_scroll(view);
-        if (view->position < 0.0f) {
-            float acceleration = -SCROLL_SPRING_STIFFNESS * view->position -
-                                SCROLL_SPRING_DAMPING * view->velocity;
-            view->velocity += acceleration * dt;
-            view->position += view->velocity * dt;
-        } else if (view->position > maximum) {
-            float displacement = view->position - maximum;
-            float acceleration = -SCROLL_SPRING_STIFFNESS * displacement -
-                                SCROLL_SPRING_DAMPING * view->velocity;
-            view->velocity += acceleration * dt;
-            view->position += view->velocity * dt;
-        } else {
-            float decay = expf(-SCROLL_FRICTION * dt);
-            view->position += view->velocity *
-                              (1.0f - decay) / SCROLL_FRICTION;
-            view->velocity *= decay;
+        float maximum_x = scroll_view_max_scroll_x(view);
+        float maximum_y = scroll_view_max_scroll(view);
+        if (view->scrollbar_drag_axis != SCROLLBAR_HORIZONTAL) {
+            update_scroll_axis(&view->position_y, &view->velocity_y,
+                               maximum_y, dt);
+        }
+        if (view->scrollbar_drag_axis != SCROLLBAR_VERTICAL) {
+            update_scroll_axis(&view->position_x, &view->velocity_x,
+                               maximum_x, dt);
         }
         remaining -= dt;
     }
 
-    float maximum = scroll_view_max_scroll(view);
-    if (view->position < 0.0f && fabsf(view->position) < 0.01f) {
-        view->position = 0.0f;
-        view->velocity = 0.0f;
-    } else if (view->position > maximum &&
-               fabsf(view->position - maximum) < 0.01f) {
-        view->position = maximum;
-        view->velocity = 0.0f;
-    }
-    if (fabsf(view->velocity) < 0.05f &&
-        view->position >= 0.0f && view->position <= maximum) {
-        view->velocity = 0.0f;
-    }
     update_content_bounds(view);
 }
 
 float scroll_view_scroll_offset(const ScrollView *view)
 {
-    return view ? displayed_scroll_offset(view) : 0.0f;
+    return view ? displayed_axis_offset(view->position_y,
+        scroll_view_max_scroll(view), view->base.bounds.h) : 0.0f;
+}
+
+float scroll_view_scroll_offset_x(const ScrollView *view)
+{
+    return view ? displayed_axis_offset(view->position_x,
+        scroll_view_max_scroll_x(view), view->base.bounds.w) : 0.0f;
 }
 
 void scroll_view_set_draw_context(VkDraw *draw)

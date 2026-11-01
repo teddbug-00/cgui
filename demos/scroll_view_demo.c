@@ -114,7 +114,7 @@ static bool create_scene(LayoutContainer **root_out, ScrollView **view_out,
     if (!root) return false;
 
     DemoCard *header = card_create(
-        "ScrollView", "Click to focus; use arrows, Page Up/Down, Home/End, or drag.",
+        "ScrollView", "Scroll either axis; drag its bar or use arrow keys.",
         header_color, 76.0f);
     if (!header || !layout_container_add_child(root, (Widget *)header)) {
         widget_destroy((Widget *)header);
@@ -155,6 +155,10 @@ static bool create_scene(LayoutContainer **root_out, ScrollView **view_out,
             widget_destroy(layout_container_widget(root));
             return false;
         }
+    }
+    if (!scroll_view_set_content_width(view, width + 320.0f)) {
+        widget_destroy(layout_container_widget(root));
+        return false;
     }
     *root_out = root;
     *view_out = view;
