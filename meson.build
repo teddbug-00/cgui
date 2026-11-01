@@ -67,6 +67,7 @@ sources = files(
   'src/tab_view.c',
   'src/split_view.c',
   'src/popover_menu.c',
+  'src/modal_dialog.c',
   'src/text_field.c',
   'src/tree_view.c',
   'src/vk_context.c',
@@ -171,6 +172,17 @@ executable(
   install: false,
 )
 
+executable(
+  'cgui-modal-dialog-demo',
+  ['demos/modal_dialog_demo.c', 'src/modal_dialog.c', 'src/button.c',
+   'src/gui.c', 'src/style.c', 'src/vk_context.c', 'src/vk_draw.c',
+   'src/glyph_atlas.c', 'src/text.c', 'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
 gui_test = executable(
   'cgui-gui-test',
   ['tests/gui_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
@@ -235,6 +247,16 @@ popover_menu_test = executable(
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
 test('popover-menu-widget', popover_menu_test)
+
+modal_dialog_test = executable(
+  'cgui-modal-dialog-test',
+  ['tests/modal_dialog_test.c', 'src/modal_dialog.c', 'src/button.c',
+   'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c',
+   'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('modal-dialog-widget', modal_dialog_test)
 
 text_test = executable(
   'cgui-text-test',
