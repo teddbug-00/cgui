@@ -121,7 +121,8 @@ void widget_destroy(Widget *self)
 
     while (self->child_count > 0) {
         Widget *child = self->children[self->child_count - 1];
-        (void)widget_remove_child(self, child);
+        --self->child_count;
+        child->parent = NULL;
         widget_destroy(child);
     }
     free(self->children);
