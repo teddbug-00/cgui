@@ -28,6 +28,8 @@ typedef enum CguiTextStyleFlags {
  * font file path to use a specific font (for example, a licensed SF font).
  */
 CguiTextEngine *cgui_text_create(void);
+/** Create an engine using a requested system font family when available. */
+CguiTextEngine *cgui_text_create_family(const char *family);
 void cgui_text_destroy(CguiTextEngine *engine);
 
 /** Shape UTF-8 text and rasterize it into a tightly packed 8-bit alpha mask. */

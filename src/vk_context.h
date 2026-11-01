@@ -52,6 +52,7 @@ typedef struct VkContext {
     VkCommandBuffer  active_cmd;
     uint32_t         active_image;
     bool             frame_open;
+    uint64_t         frame_number;
 
     float clear_color[4];
 } VkContext;

@@ -32,6 +32,12 @@ typedef struct ShelfRow {
 
 #define MAX_SHELVES 256u
 
+typedef struct StagingAllocation {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    struct StagingAllocation *next;
+} StagingAllocation;
+
 struct CguiGlyphAtlas {
     VkContext        *ctx;
     CguiTextEngine   *engine;
@@ -57,24 +63,58 @@ struct CguiGlyphAtlas {
     /* Glyph cache */
     CguiAtlasGlyph    glyphs[MAX_GLYPHS];
     uint32_t          glyph_count;
+    uint64_t          generation;
+
+    /* Upload buffers remain alive until their frame fence has completed. */
+    StagingAllocation *staging[VK_MAX_FRAMES_IN_FLIGHT];
+    uint64_t           staging_frame[VK_MAX_FRAMES_IN_FLIGHT];
 };
 
 /* ------------------------------------------------------------------ */
 /* Vulkan helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-static uint32_t find_memory(VkPhysicalDevice phys, uint32_t bits,
-                            VkMemoryPropertyFlags flags)
+static bool find_memory(VkPhysicalDevice phys, uint32_t bits,
+                        VkMemoryPropertyFlags flags, uint32_t *index_out)
 {
     VkPhysicalDeviceMemoryProperties props;
     vkGetPhysicalDeviceMemoryProperties(phys, &props);
     for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
         if ((bits & (1u << i)) &&
             (props.memoryTypes[i].propertyFlags & flags) == flags) {
-            return i;
+            *index_out = i;
+            return true;
         }
     }
-    return 0;
+    return false;
+}
+
+static void destroy_staging_list(VkDevice dev, StagingAllocation *node)
+{
+    while (node) {
+        StagingAllocation *next = node->next;
+        vkDestroyBuffer(dev, node->buffer, NULL);
+        vkFreeMemory(dev, node->memory, NULL);
+        free(node);
+        node = next;
+    }
+}
+
+static void collect_staging(CguiGlyphAtlas *atlas, uint32_t frame)
+{
+    if (atlas->staging_frame[frame] == atlas->ctx->frame_number) return;
+    destroy_staging_list(atlas->ctx->device, atlas->staging[frame]);
+    atlas->staging[frame] = NULL;
+    atlas->staging_frame[frame] = atlas->ctx->frame_number;
+}
+
+static void recycle_atlas(CguiGlyphAtlas *atlas)
+{
+    atlas->glyph_count = 0;
+    atlas->shelf_count = 0;
+    atlas->next_shelf_y = 0;
+    ++atlas->generation;
+    fprintf(stderr, "cgui atlas: recycling full glyph cache\n");
 }
 
 static bool create_r8_image(VkContext *ctx,
@@ -100,11 +140,17 @@ static bool create_r8_image(VkContext *ctx,
 
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(dev, *img, &req);
+    uint32_t memory_type;
+    if (!find_memory(ctx->physical_device, req.memoryTypeBits,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_type)) {
+        vkDestroyImage(dev, *img, NULL);
+        *img = VK_NULL_HANDLE;
+        return false;
+    }
     VkMemoryAllocateInfo mai = {
         .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize  = req.size,
-        .memoryTypeIndex = find_memory(ctx->physical_device, req.memoryTypeBits,
-                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        .memoryTypeIndex = memory_type,
     };
     if (vkAllocateMemory(dev, &mai, NULL, mem) != VK_SUCCESS) {
         vkDestroyImage(dev, *img, NULL);
@@ -203,6 +249,10 @@ void cgui_atlas_destroy(CguiGlyphAtlas *atlas)
 {
     if (!atlas) return;
     VkDevice dev = atlas->ctx->device;
+    vkDeviceWaitIdle(dev);
+    for (uint32_t i = 0; i < VK_MAX_FRAMES_IN_FLIGHT; ++i) {
+        destroy_staging_list(dev, atlas->staging[i]);
+    }
     if (atlas->view)   vkDestroyImageView(dev, atlas->view, NULL);
     if (atlas->memory) vkFreeMemory(dev, atlas->memory, NULL);
     if (atlas->image)  vkDestroyImage(dev, atlas->image, NULL);
@@ -244,8 +294,7 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
                                      uint32_t style_flags)
 {
     if (atlas->glyph_count >= MAX_GLYPHS) {
-        fprintf(stderr, "cgui atlas: glyph table full (%u glyphs)\n", MAX_GLYPHS);
-        return NULL;
+        recycle_atlas(atlas);
     }
 
     /* Rasterize the glyph */
@@ -260,6 +309,12 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
     uint16_t ax = 0, ay = 0;
 
     if (has_bitmap && w > 0 && h > 0) {
+        if (w > ATLAS_W || h > ATLAS_H) {
+            fprintf(stderr, "cgui atlas: glyph exceeds atlas dimensions\n");
+            cgui_glyph_bitmap_destroy(&bm);
+            return NULL;
+        }
+
         /* Find or create a shelf with enough width */
         ShelfRow *shelf = NULL;
         for (uint32_t i = 0; i < atlas->shelf_count; ++i) {
@@ -275,9 +330,7 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
             /* Open a new shelf */
             if (atlas->shelf_count >= MAX_SHELVES ||
                 atlas->next_shelf_y + (uint16_t)h > ATLAS_H) {
-                fprintf(stderr, "cgui atlas: atlas texture is full\n");
-                cgui_glyph_bitmap_destroy(&bm);
-                return NULL;
+                recycle_atlas(atlas);
             }
             shelf = &atlas->shelves[atlas->shelf_count++];
             shelf->x      = 0;
@@ -290,6 +343,12 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
         ay = shelf->y;
         shelf->x = (uint16_t)(shelf->x + w);
 
+        /* Clear glyph padding so recycled UV regions cannot bleed old glyphs. */
+        for (uint32_t gy = 0; gy < h; ++gy) {
+            uint8_t *dst = atlas->pixels + ((size_t)(ay + gy) * ATLAS_W + ax);
+            memset(dst, 0, w);
+        }
+
         /* Blit into CPU mirror */
         for (uint32_t gy = 0; gy < bm.height; ++gy) {
             const uint8_t *src = bm.alpha + (size_t)gy * bm.width;
@@ -299,7 +358,7 @@ static CguiAtlasGlyph *insert_glyph(CguiGlyphAtlas *atlas,
 
         /* Expand dirty rect */
         if (!atlas->dirty || ay < atlas->dirty_y0) atlas->dirty_y0 = ay;
-        uint16_t end_y = (uint16_t)(ay + bm.height);
+        uint16_t end_y = (uint16_t)(ay + h);
         if (!atlas->dirty || end_y > atlas->dirty_y1) atlas->dirty_y1 = end_y;
         atlas->dirty = true;
     }
@@ -340,6 +399,17 @@ bool cgui_atlas_flush(CguiGlyphAtlas *atlas)
     uint32_t row_count  = y1 - y0;
     size_t   byte_count = (size_t)row_count * ATLAS_W;
 
+    VkCommandBuffer cmd = ctx->active_cmd;
+    bool frame_upload = cmd != VK_NULL_HANDLE;
+    StagingAllocation *allocation = NULL;
+    if (frame_upload) {
+        uint32_t frame = ctx->current_frame;
+        collect_staging(atlas, frame);
+        allocation = malloc(sizeof(*allocation));
+        if (!allocation) return false;
+        allocation->next = NULL;
+    }
+
     /* Create a staging buffer */
     VkBufferCreateInfo bci = {
         .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -348,13 +418,21 @@ bool cgui_atlas_flush(CguiGlyphAtlas *atlas)
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     VkBuffer staging = VK_NULL_HANDLE;
-    if (vkCreateBuffer(dev, &bci, NULL, &staging) != VK_SUCCESS) return false;
+    if (vkCreateBuffer(dev, &bci, NULL, &staging) != VK_SUCCESS) {
+        free(allocation);
+        return false;
+    }
 
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(dev, staging, &req);
-    uint32_t mt = find_memory(ctx->physical_device, req.memoryTypeBits,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    uint32_t mt;
+    if (!find_memory(ctx->physical_device, req.memoryTypeBits,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &mt)) {
+        vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
+        return false;
+    }
     VkMemoryAllocateInfo mai = {
         .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize  = req.size,
@@ -363,20 +441,36 @@ bool cgui_atlas_flush(CguiGlyphAtlas *atlas)
     VkDeviceMemory staging_mem = VK_NULL_HANDLE;
     if (vkAllocateMemory(dev, &mai, NULL, &staging_mem) != VK_SUCCESS) {
         vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
         return false;
     }
-    vkBindBufferMemory(dev, staging, staging_mem, 0);
+    if (vkBindBufferMemory(dev, staging, staging_mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(dev, staging_mem, NULL);
+        vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
+        return false;
+    }
 
     void *mapped = NULL;
-    vkMapMemory(dev, staging_mem, 0, byte_count, 0, &mapped);
+    if (vkMapMemory(dev, staging_mem, 0, byte_count, 0, &mapped) != VK_SUCCESS) {
+        vkFreeMemory(dev, staging_mem, NULL);
+        vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
+        return false;
+    }
     memcpy(mapped, atlas->pixels + (size_t)y0 * ATLAS_W, byte_count);
     vkUnmapMemory(dev, staging_mem);
 
-    /* Upload via one-shot command buffer */
-    VkCommandBuffer cmd = vk_context_begin_one_shot(ctx);
+    /* Record into the current frame to avoid submitting and waiting per glyph. */
+    bool resume_pass = frame_upload && ctx->frame_open;
+    if (resume_pass) vk_context_suspend_pass(ctx);
+    if (!frame_upload) {
+        cmd = vk_context_begin_one_shot(ctx);
+    }
     if (cmd == VK_NULL_HANDLE) {
         vkFreeMemory(dev, staging_mem, NULL);
         vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
         return false;
     }
 
@@ -419,17 +513,34 @@ bool cgui_atlas_flush(CguiGlyphAtlas *atlas)
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &b1);
 
-    bool ok = vk_context_end_one_shot(ctx, cmd);
-
-    vkFreeMemory(dev, staging_mem, NULL);
-    vkDestroyBuffer(dev, staging, NULL);
+    bool ok = frame_upload || vk_context_end_one_shot(ctx, cmd);
 
     if (ok) {
+        if (frame_upload) {
+            allocation->buffer = staging;
+            allocation->memory = staging_mem;
+            uint32_t frame = ctx->current_frame;
+            allocation->next = atlas->staging[frame];
+            atlas->staging[frame] = allocation;
+        } else {
+            vkFreeMemory(dev, staging_mem, NULL);
+            vkDestroyBuffer(dev, staging, NULL);
+        }
         atlas->dirty   = false;
         atlas->dirty_y0 = ATLAS_H;
         atlas->dirty_y1 = 0;
+    } else {
+        vkFreeMemory(dev, staging_mem, NULL);
+        vkDestroyBuffer(dev, staging, NULL);
+        free(allocation);
     }
+    if (resume_pass) vk_context_resume_pass(ctx);
     return ok;
+}
+
+bool cgui_atlas_has_pending_upload(const CguiGlyphAtlas *atlas)
+{
+    return atlas && atlas->dirty;
 }
 
 /* ------------------------------------------------------------------ */
@@ -466,34 +577,51 @@ bool cgui_atlas_shape_quads(CguiGlyphAtlas *atlas,
                     shaped, n, NULL, &total_w, &asc, &lh);
 
     uint32_t out_n = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t gid = shaped[i].glyph_id;
+    uint32_t recycle_count = 0;
+    for (;;) {
+        uint64_t generation = atlas->generation;
+        out_n = 0;
+        bool failed = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t gid = shaped[i].glyph_id;
 
-        /* Look up or rasterize the glyph */
-        CguiAtlasGlyph *ag = find_glyph(atlas, gid, pixel_size, style_flags);
-        if (!ag) {
-            ag = insert_glyph(atlas, gid, pixel_size, style_flags);
-        }
-        if (!ag || ag->atlas_w == 0 || ag->atlas_h == 0) {
-            /* Whitespace or invisible glyph – skip but count */
-            continue;
+            CguiAtlasGlyph *ag = find_glyph(atlas, gid, pixel_size, style_flags);
+            if (!ag) ag = insert_glyph(atlas, gid, pixel_size, style_flags);
+            if (atlas->generation != generation) break;
+            if (!ag) {
+                failed = true;
+                break;
+            }
+            if (ag->atlas_w == 0 || ag->atlas_h == 0) continue;
+
+            float qx = x + shaped[i].pen_x + (float)ag->bearing_x;
+            float qy = y + asc - (float)ag->bearing_y;
+
+            if (quads_out && out_n < cap) {
+                CguiGlyphQuad *q = &quads_out[out_n];
+                q->x  = qx;
+                q->y  = qy;
+                q->w  = (float)ag->atlas_w;
+                q->h  = (float)ag->atlas_h;
+                q->u0 = (float)ag->atlas_x / (float)ATLAS_W;
+                q->v0 = (float)ag->atlas_y / (float)ATLAS_H;
+                q->u1 = (float)(ag->atlas_x + ag->atlas_w) / (float)ATLAS_W;
+                q->v1 = (float)(ag->atlas_y + ag->atlas_h) / (float)ATLAS_H;
+            }
+            ++out_n;
         }
 
-        float qx = x + shaped[i].pen_x + (float)ag->bearing_x;
-        float qy = y + asc - (float)ag->bearing_y;
-
-        if (quads_out && out_n < cap) {
-            CguiGlyphQuad *q = &quads_out[out_n];
-            q->x  = qx;
-            q->y  = qy;
-            q->w  = (float)ag->atlas_w;
-            q->h  = (float)ag->atlas_h;
-            q->u0 = (float)ag->atlas_x / (float)ATLAS_W;
-            q->v0 = (float)ag->atlas_y / (float)ATLAS_H;
-            q->u1 = (float)(ag->atlas_x + ag->atlas_w) / (float)ATLAS_W;
-            q->v1 = (float)(ag->atlas_y + ag->atlas_h) / (float)ATLAS_H;
+        if (atlas->generation == generation) {
+            if (failed) {
+                free(shaped);
+                return false;
+            }
+            break;
         }
-        ++out_n;
+        if (++recycle_count > 1) {
+            free(shaped);
+            return false;
+        }
     }
 
     free(shaped);

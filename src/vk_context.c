@@ -583,6 +583,7 @@ bool vk_context_begin_frame(VkContext *ctx)
     ctx->active_cmd   = cmd;
     ctx->active_image = image_index;
     ctx->frame_open   = true;
+    ++ctx->frame_number;
     return true;
 }
 

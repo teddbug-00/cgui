@@ -53,7 +53,10 @@ struct Widget {
 /* ------------------------------------------------------------------ */
 
 Widget *widget_create(void);
+/** Attach an unparented child; its parent owns it and destroys it recursively. */
 bool    widget_add_child(Widget *parent, Widget *child);
+/** Detach a child without destroying it. */
+bool    widget_remove_child(Widget *parent, Widget *child);
 
 void widget_draw_noop(Widget *self, struct VkContext *vk);
 void widget_event_noop(Widget *self, const void *ev);

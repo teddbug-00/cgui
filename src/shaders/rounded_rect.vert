@@ -3,7 +3,7 @@
 layout(push_constant) uniform Push {
     vec4  rect;       /* x, y, w, h in pixels (top-left origin) */
     vec4  color;      /* RGBA 0–1 */
-    vec4  params;     /* x = corner_radius, y = soft_or_neg_sigma, z = screen_w, w = screen_h */
+    vec4  params;     /* x = corner_radius, y = edge AA width, z/w = screen size */
 } pc;
 
 layout(location = 0) out vec2  v_local;
@@ -24,8 +24,8 @@ void main()
     );
     vec2 uv = corners[gl_VertexIndex];
 
-    /* Pad geometry so soft shadow / AA is not clipped */
-    float pad = abs(pc.params.y) * 3.5 + 2.0;
+    /* Pad geometry slightly so edge anti-aliasing is not clipped. */
+    float pad = pc.params.y * 3.5 + 2.0;
     vec2 half0 = 0.5 * pc.rect.zw;
     vec2 centre = pc.rect.xy + half0;
 
@@ -42,7 +42,7 @@ void main()
     );
     gl_Position = vec4(ndc, 0.0, 1.0);
 
-    v_local  = local;           /* SDF evaluated in original-size local space */
+    v_local  = local;
     v_half   = half0;
     v_color  = pc.color;
     v_radius = pc.params.x;

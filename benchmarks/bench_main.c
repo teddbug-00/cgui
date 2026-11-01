@@ -84,7 +84,7 @@ static void print_bench_result(const char *name, uint64_t iters, uint64_t elapse
 
 static void bench_text_rendering(CguiTextEngine *engine)
 {
-    print_bench_header("GPU Atlas & HarfBuzz Real-Time Text Engine");
+    print_bench_header("CPU Text Shaping & Glyph Rasterization");
 
     const char *short_str = "Settings";
     const char *med_str   = "Clean Vulkan UI with crisp macOS typography";
@@ -125,7 +125,7 @@ static void bench_text_rendering(CguiTextEngine *engine)
             cgui_glyph_bitmap_destroy(&bm);
         }
         uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("FreeType Rasterize Glyph (Cold Atlas Cache)", iters, elapsed);
+        print_bench_result("FreeType Rasterize Uncached Glyph", iters, elapsed);
     }
 
     /* 3. Legacy full-string software fallback (allocates whole string CPU bitmap) */
@@ -270,7 +270,7 @@ static void bench_events_and_animation(void)
             }
         }
         uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Event Dispatch (50 widgets hierarchy)", iters, elapsed);
+        print_bench_result("Event Dispatch (50 widgets hierarchy)", iters * 50, elapsed);
         widget_destroy(root);
     }
 
@@ -323,7 +323,8 @@ static void bench_events_and_animation(void)
             }
         }
         uint64_t elapsed = get_time_ns() - start;
-        print_bench_result("Update 5,000 Animated Toggles / Frame", iters, elapsed);
+        print_bench_result("Update 5,000 Animated Toggles / Frame",
+                           iters * (uint64_t)NUM_TOGGLES, elapsed);
 
         for (int i = 0; i < NUM_TOGGLES; ++i) {
             widget_destroy((Widget *)toggles[i]);
@@ -381,7 +382,7 @@ int main(int argc, char **argv)
     (void)argv;
 
     printf("\n\033[1;32m==============================================================================\033[0m\n");
-    printf("\033[1;32m       cgui Release Performance Benchmarks (High-Precision Monotonic Timer)     \033[0m\n");
+    printf("\033[1;32m          cgui CPU Benchmarks (High-Precision Monotonic Timer)                  \033[0m\n");
     printf("\033[1;32m==============================================================================\033[0m\n");
 
     CguiTextEngine *engine = cgui_text_create();

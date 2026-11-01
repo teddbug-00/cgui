@@ -9,6 +9,7 @@ layout(push_constant) uniform Push {
     vec2 direction;   /* (1/w, 0) or (0, 1/h) */
     float sigma;      /* Gaussian sigma in pixels */
     float _pad;
+    vec4 uv_bounds;   /* Clamp filtering to this shadow's atlas tile */
 } pc;
 
 void main()
@@ -41,8 +42,10 @@ void main()
         float offset = (a * wa + b * wb) / max(w, 1e-6);
 
         vec2 offset_dir = pc.direction * offset;
-        sum += (texture(u_tex, v_uv + offset_dir) +
-                texture(u_tex, v_uv - offset_dir)) * w;
+        sum += (texture(u_tex, clamp(v_uv + offset_dir,
+                                     pc.uv_bounds.xy, pc.uv_bounds.zw)) +
+                texture(u_tex, clamp(v_uv - offset_dir,
+                                     pc.uv_bounds.xy, pc.uv_bounds.zw))) * w;
         wsum += 2.0 * w;
     }
 

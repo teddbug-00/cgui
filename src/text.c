@@ -26,6 +26,7 @@
 
 struct CguiTextEngine {
     FT_Library library;
+    hb_buffer_t *buffer;
     FT_Face face_regular;
     FT_Face face_bold;
     FT_Face face_italic;
@@ -83,6 +84,20 @@ static FT_Face load_face(FT_Library lib, const char *path, FT_Long face_index)
     return NULL;
 }
 
+#if defined(__APPLE__) || defined(_WIN32)
+static bool is_monospace_family(const char *family)
+{
+    return family &&
+           (strcmp(family, "monospace") == 0 ||
+            strcmp(family, "monospaced") == 0);
+}
+
+static bool is_serif_family(const char *family)
+{
+    return family && strcmp(family, "serif") == 0;
+}
+#endif
+
 #if defined(CGUI_HAVE_FONTCONFIG)
 static FT_Face query_fontconfig_face(FT_Library lib, const char *family, int weight, int slant)
 {
@@ -116,9 +131,16 @@ static FT_Face query_fontconfig_face(FT_Library lib, const char *family, int wei
 }
 #endif
 
-static bool open_system_fonts(CguiTextEngine *engine)
+static bool open_system_fonts(CguiTextEngine *engine, const char *family)
 {
 #ifdef __APPLE__
+    if (is_monospace_family(family)) {
+        engine->face_regular = load_face(engine->library,
+                                         "/System/Library/Fonts/Menlo.ttc", 0);
+    } else if (is_serif_family(family)) {
+        engine->face_regular = load_face(engine->library,
+                                         "/System/Library/Fonts/Times.ttc", 0);
+    }
     static const char *const candidates_reg[] = {
         "/System/Library/Fonts/SFNS.ttf",
         "/System/Library/Fonts/SFNSText.ttf",
@@ -126,9 +148,11 @@ static bool open_system_fonts(CguiTextEngine *engine)
         "/System/Library/Fonts/Helvetica.ttc",
         NULL,
     };
-    for (size_t i = 0; candidates_reg[i]; ++i) {
-        engine->face_regular = load_face(engine->library, candidates_reg[i], 0);
-        if (engine->face_regular) break;
+    if (!engine->face_regular) {
+        for (size_t i = 0; candidates_reg[i]; ++i) {
+            engine->face_regular = load_face(engine->library, candidates_reg[i], 0);
+            if (engine->face_regular) break;
+        }
     }
 
     static const char *const candidates_bold[] = {
@@ -136,11 +160,13 @@ static bool open_system_fonts(CguiTextEngine *engine)
         "/System/Library/Fonts/SFNSTextBold.ttf",
         NULL,
     };
-    for (size_t i = 0; candidates_bold[i]; ++i) {
-        engine->face_bold = load_face(engine->library, candidates_bold[i], 0);
-        if (engine->face_bold) {
-            engine->has_bold_face = true;
-            break;
+    if (!family || (!is_monospace_family(family) && !is_serif_family(family))) {
+        for (size_t i = 0; candidates_bold[i]; ++i) {
+            engine->face_bold = load_face(engine->library, candidates_bold[i], 0);
+            if (engine->face_bold) {
+                engine->has_bold_face = true;
+                break;
+            }
         }
     }
 
@@ -149,38 +175,61 @@ static bool open_system_fonts(CguiTextEngine *engine)
         "/System/Library/Fonts/SFNSTextItalic.ttf",
         NULL,
     };
-    for (size_t i = 0; candidates_it[i]; ++i) {
-        engine->face_italic = load_face(engine->library, candidates_it[i], 0);
-        if (engine->face_italic) {
-            engine->has_italic_face = true;
-            break;
+    if (!family || (!is_monospace_family(family) && !is_serif_family(family))) {
+        for (size_t i = 0; candidates_it[i]; ++i) {
+            engine->face_italic = load_face(engine->library, candidates_it[i], 0);
+            if (engine->face_italic) {
+                engine->has_italic_face = true;
+                break;
+            }
         }
     }
 #elif defined(_WIN32)
-    engine->face_regular = load_face(engine->library, "C:\\Windows\\Fonts\\segoeui.ttf", 0);
+    if (is_monospace_family(family)) {
+        engine->face_regular = load_face(engine->library,
+                                         "C:\\Windows\\Fonts\\consola.ttf", 0);
+    } else if (is_serif_family(family)) {
+        engine->face_regular = load_face(engine->library,
+                                         "C:\\Windows\\Fonts\\times.ttf", 0);
+    }
+    if (!engine->face_regular) {
+        engine->face_regular = load_face(engine->library, "C:\\Windows\\Fonts\\segoeui.ttf", 0);
+    }
     if (!engine->face_regular) {
         engine->face_regular = load_face(engine->library, "C:\\Windows\\Fonts\\arial.ttf", 0);
     }
-    engine->face_bold = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuib.ttf", 0);
-    if (engine->face_bold) engine->has_bold_face = true;
-    engine->face_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuii.ttf", 0);
-    if (engine->face_italic) engine->has_italic_face = true;
-    engine->face_bold_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuiz.ttf", 0);
-    if (engine->face_bold_italic) engine->has_bold_italic_face = true;
+    if (!family || (!is_monospace_family(family) && !is_serif_family(family))) {
+        engine->face_bold = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuib.ttf", 0);
+        if (engine->face_bold) engine->has_bold_face = true;
+        engine->face_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuii.ttf", 0);
+        if (engine->face_italic) engine->has_italic_face = true;
+        engine->face_bold_italic = load_face(engine->library, "C:\\Windows\\Fonts\\segoeuiz.ttf", 0);
+        if (engine->face_bold_italic) engine->has_bold_italic_face = true;
+    }
 #elif defined(CGUI_HAVE_FONTCONFIG)
     if (FcInit()) {
-        engine->face_regular = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_REGULAR, FC_SLANT_ROMAN);
+        const char *requested_family = family && family[0] ? family : "Inter";
+        engine->face_regular = query_fontconfig_face(engine->library,
+            requested_family, FC_WEIGHT_REGULAR, FC_SLANT_ROMAN);
+        if (!engine->face_regular && family && family[0]) {
+            fprintf(stderr, "cgui text: requested font family '%s' was not found\n",
+                    family);
+            return false;
+        }
         if (!engine->face_regular) {
             engine->face_regular = query_fontconfig_face(engine->library, "sans-serif", FC_WEIGHT_REGULAR, FC_SLANT_ROMAN);
         }
         if (engine->face_regular) {
-            engine->face_bold = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_BOLD, FC_SLANT_ROMAN);
+            engine->face_bold = query_fontconfig_face(engine->library,
+                requested_family, FC_WEIGHT_BOLD, FC_SLANT_ROMAN);
             if (engine->face_bold) engine->has_bold_face = true;
 
-            engine->face_italic = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_REGULAR, FC_SLANT_ITALIC);
+            engine->face_italic = query_fontconfig_face(engine->library,
+                requested_family, FC_WEIGHT_REGULAR, FC_SLANT_ITALIC);
             if (engine->face_italic) engine->has_italic_face = true;
 
-            engine->face_bold_italic = query_fontconfig_face(engine->library, "Inter", FC_WEIGHT_BOLD, FC_SLANT_ITALIC);
+            engine->face_bold_italic = query_fontconfig_face(engine->library,
+                requested_family, FC_WEIGHT_BOLD, FC_SLANT_ITALIC);
             if (engine->face_bold_italic) engine->has_bold_italic_face = true;
         }
     }
@@ -200,11 +249,18 @@ static bool open_system_fonts(CguiTextEngine *engine)
             }
         }
     }
+#else
+    if (family && family[0]) return false;
 #endif
     return engine->face_regular != NULL;
 }
 
 CguiTextEngine *cgui_text_create(void)
+{
+    return cgui_text_create_family(NULL);
+}
+
+CguiTextEngine *cgui_text_create_family(const char *family)
 {
     CguiTextEngine *engine = calloc(1, sizeof(*engine));
     if (!engine) {
@@ -226,7 +282,7 @@ CguiTextEngine *cgui_text_create(void)
 
     init_gamma_lut();
 
-    const char *configured_path = getenv("CGUI_FONT");
+    const char *configured_path = family ? NULL : getenv("CGUI_FONT");
     bool font_opened = false;
     if (configured_path && configured_path[0]) {
         engine->face_regular = load_face(engine->library, configured_path, 0);
@@ -243,7 +299,7 @@ CguiTextEngine *cgui_text_create(void)
             if (engine->face_italic) engine->has_italic_face = true;
         }
     } else {
-        font_opened = open_system_fonts(engine);
+        font_opened = open_system_fonts(engine, family);
     }
 
     if (!font_opened) {
@@ -269,6 +325,13 @@ CguiTextEngine *cgui_text_create(void)
         engine->hb_bold_italic = hb_ft_font_create_referenced(engine->face_bold_italic);
     }
 
+    engine->buffer = hb_buffer_create();
+    if (!engine->buffer || !hb_buffer_allocation_successful(engine->buffer)) {
+        fprintf(stderr, "cgui text: failed to create HarfBuzz buffer\n");
+        cgui_text_destroy(engine);
+        return NULL;
+    }
+
     return engine;
 }
 
@@ -277,6 +340,7 @@ void cgui_text_destroy(CguiTextEngine *engine)
     if (!engine) {
         return;
     }
+    if (engine->buffer)         hb_buffer_destroy(engine->buffer);
     if (engine->hb_bold_italic) hb_font_destroy(engine->hb_bold_italic);
     if (engine->hb_italic)      hb_font_destroy(engine->hb_italic);
     if (engine->hb_bold)        hb_font_destroy(engine->hb_bold);
@@ -302,18 +366,15 @@ void cgui_text_destroy(CguiTextEngine *engine)
     free(engine);
 }
 
-static bool shape_line(hb_font_t *font, const char *text, int length,
+static bool shape_line(CguiTextEngine *engine, hb_font_t *font,
+                       const char *text, int length,
                        GlyphPlacement **placements_out,
                        unsigned int *count_out, int *min_advance, int *max_advance)
 {
-    hb_buffer_t *buffer = hb_buffer_create();
-    if (!buffer || !hb_buffer_allocation_successful(buffer)) {
-        if (buffer) {
-            hb_buffer_destroy(buffer);
-        }
-        return false;
-    }
+    hb_buffer_t *buffer = engine->buffer;
+    if (!buffer) return false;
 
+    hb_buffer_clear_contents(buffer);
     hb_buffer_add_utf8(buffer, text, length, 0, length);
     hb_buffer_guess_segment_properties(buffer);
     hb_shape(font, buffer, NULL, 0);
@@ -323,7 +384,7 @@ static bool shape_line(hb_font_t *font, const char *text, int length,
     const hb_glyph_position_t *positions = hb_buffer_get_glyph_positions(buffer, NULL);
     GlyphPlacement *placements = count ? malloc(count * sizeof(*placements)) : NULL;
     if (count && !placements) {
-        hb_buffer_destroy(buffer);
+        hb_buffer_clear_contents(buffer);
         return false;
     }
 
@@ -350,7 +411,7 @@ static bool shape_line(hb_font_t *font, const char *text, int length,
     *max_advance = (int)ceil((double)max_x / 64.0);
     *placements_out = placements;
     *count_out = count;
-    hb_buffer_destroy(buffer);
+    hb_buffer_clear_contents(buffer);
     return true;
 }
 
@@ -608,7 +669,7 @@ bool cgui_text_render_styled(CguiTextEngine *engine, const char *utf8,
             lines[line_index].text = start;
             lines[line_index].length = (int)length;
 
-            if (!shape_line(font, start, (int)length,
+            if (!shape_line(engine, font, start, (int)length,
                             &lines[line_index].placements,
                             &lines[line_index].glyph_count,
                             &lines[line_index].min_advance,
@@ -790,12 +851,10 @@ bool cgui_text_shape(CguiTextEngine *engine,
         return false;
     }
 
-    hb_buffer_t *buf = hb_buffer_create();
-    if (!buf || !hb_buffer_allocation_successful(buf)) {
-        if (buf) hb_buffer_destroy(buf);
-        return false;
-    }
+    hb_buffer_t *buf = engine->buffer;
+    if (!buf) return false;
 
+    hb_buffer_clear_contents(buf);
     int byte_len = (int)strlen(utf8);
     hb_buffer_add_utf8(buf, utf8, byte_len, 0, byte_len);
     hb_buffer_guess_segment_properties(buf);
@@ -834,7 +893,7 @@ bool cgui_text_shape(CguiTextEngine *engine,
         if (line_h_out)   *line_h_out   = lh;
     }
 
-    hb_buffer_destroy(buf);
+    hb_buffer_clear_contents(buf);
     return true;
 }
 

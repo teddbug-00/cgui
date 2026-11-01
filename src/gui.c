@@ -24,12 +24,20 @@ Widget *widget_create(void)
 
 bool widget_add_child(Widget *parent, Widget *child)
 {
-    if (!parent || !child) {
+    if (!parent || !child || parent == child || child->parent) {
         return false;
+    }
+
+    for (Widget *ancestor = parent; ancestor; ancestor = ancestor->parent) {
+        if (ancestor == child) return false;
     }
 
     if (parent->child_count >= parent->child_capacity) {
         size_t new_cap = parent->child_capacity == 0 ? 4 : parent->child_capacity * 2;
+        if (new_cap < parent->child_capacity ||
+            new_cap > SIZE_MAX / sizeof(*parent->children)) {
+            return false;
+        }
         Widget **new_arr = realloc(parent->children, new_cap * sizeof(Widget *));
         if (!new_arr) {
             return false;
@@ -40,6 +48,23 @@ bool widget_add_child(Widget *parent, Widget *child)
 
     parent->children[parent->child_count++] = child;
     child->parent = parent;
+    return true;
+}
+
+bool widget_remove_child(Widget *parent, Widget *child)
+{
+    if (!parent || !child || child->parent != parent) return false;
+
+    size_t index = 0;
+    while (index < parent->child_count && parent->children[index] != child) {
+        ++index;
+    }
+    if (index == parent->child_count) return false;
+
+    memmove(&parent->children[index], &parent->children[index + 1],
+            (parent->child_count - index - 1) * sizeof(*parent->children));
+    --parent->child_count;
+    child->parent = NULL;
     return true;
 }
 
@@ -66,8 +91,14 @@ void widget_destroy(Widget *self)
         return;
     }
 
-    for (size_t i = 0; i < self->child_count; ++i) {
-        widget_destroy(self->children[i]);
+    if (self->parent) {
+        (void)widget_remove_child(self->parent, self);
+    }
+
+    while (self->child_count > 0) {
+        Widget *child = self->children[self->child_count - 1];
+        (void)widget_remove_child(self, child);
+        widget_destroy(child);
     }
     free(self->children);
 

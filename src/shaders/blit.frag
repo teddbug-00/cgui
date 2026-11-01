@@ -8,6 +8,6 @@ layout(set = 0, binding = 0) uniform sampler2D u_tex;
 
 void main()
 {
-    float a = texture(u_tex, v_uv).a;
-    out_color = vec4(v_color.rgb, v_color.a * a);
+    vec4 texel = texture(u_tex, v_uv);
+    out_color = vec4(v_color.rgb, v_color.a * texel.a);
 }

@@ -32,6 +32,7 @@ shaders = [
   ['blur.frag', 'frag'],
   ['blit.vert', 'vert'],
   ['blit.frag', 'frag'],
+  ['icon.frag', 'frag'],
   ['text.vert', 'vert'],
   ['text.frag', 'frag'],
 ]
@@ -60,6 +61,7 @@ sources = files(
   'src/toggle.c',
   'src/slider.c',
   'src/text_field.c',
+  'src/tree_view.c',
   'src/vk_context.c',
   'src/vk_draw.c',
   'src/spv_loader.c',
@@ -73,6 +75,23 @@ executable(
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
   install: false,
 )
+
+executable(
+  'cgui-text-demo',
+  ['demos/text_demo.c', 'src/style.c', 'src/text.c', 'src/glyph_atlas.c',
+   'src/vk_context.c', 'src/vk_draw.c', 'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
+gui_test = executable(
+  'cgui-gui-test',
+  ['tests/gui_test.c', 'src/gui.c', 'src/style.c'],
+  include_directories: include_directories('src'),
+)
+test('widget-hierarchy', gui_test)
 
 text_test = executable(
   'cgui-text-test',
@@ -114,6 +133,14 @@ text_field_test = executable(
 )
 test('text-field-widget', text_field_test)
 
+tree_view_test = executable(
+  'cgui-tree-view-test',
+  ['tests/tree_view_test.c', 'src/tree_view.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('tree-view-widget', tree_view_test)
+
 bench_exe = executable(
   'cgui-bench',
   ['benchmarks/bench_main.c', 'src/gui.c', 'src/style.c', 'src/glyph_atlas.c', 'src/text.c', 'src/panel.c', 'src/button.c', 'src/label.c', 'src/toggle.c', 'src/slider.c', 'src/text_field.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
@@ -121,3 +148,11 @@ bench_exe = executable(
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
 benchmark('core-bench', bench_exe)
+
+render_bench_exe = executable(
+  'cgui-render-bench',
+  ['benchmarks/render_bench.c', 'src/style.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)

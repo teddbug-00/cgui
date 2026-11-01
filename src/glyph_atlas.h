@@ -87,6 +87,7 @@ bool cgui_atlas_shape_quads(CguiGlyphAtlas *atlas,
 
 /** Flush any pending dirty regions to the GPU atlas texture. */
 bool cgui_atlas_flush(CguiGlyphAtlas *atlas);
+bool cgui_atlas_has_pending_upload(const CguiGlyphAtlas *atlas);
 
 /** Return the Vulkan image view for the atlas (bind as sampled image). */
 VkImageView cgui_atlas_image_view(const CguiGlyphAtlas *atlas);

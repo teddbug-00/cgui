@@ -60,6 +60,12 @@ int main(void)
     if (!engine) {
         return 1;
     }
+    CguiTextEngine *monospace = cgui_text_create_family("monospace");
+    if (!monospace) {
+        fprintf(stderr, "failed to create monospace font family\n");
+        cgui_text_destroy(engine);
+        return 1;
+    }
 
     CguiTextBitmap latin = {0};
     CguiTextBitmap utf8 = {0};
@@ -90,6 +96,8 @@ int main(void)
 
     CguiTextBitmap regular_typo = {0};
     failed |= render_text_styled(engine, "Typography", 16, CGUI_TEXT_REGULAR, &regular_typo);
+    CguiTextBitmap mono_text = {0};
+    failed |= render_text(monospace, "fixed width", 18, &mono_text);
 
     if (!failed && (count_ink(&latin) == 0 || count_ink(&utf8) == 0 ||
                     !has_antialiased_edge(&latin))) {
@@ -124,6 +132,10 @@ int main(void)
         fprintf(stderr, "bold-italic text produced no ink\n");
         failed = 1;
     }
+    if (!failed && count_ink(&mono_text) == 0) {
+        fprintf(stderr, "monospace font family produced no ink\n");
+        failed = 1;
+    }
 
     CguiTextBitmap invalid = {0};
     if (cgui_text_render(engine, "invalid size", 0, &invalid)) {
@@ -142,6 +154,8 @@ int main(void)
     cgui_text_bitmap_destroy(&italic_text);
     cgui_text_bitmap_destroy(&bold_italic_text);
     cgui_text_bitmap_destroy(&regular_typo);
+    cgui_text_bitmap_destroy(&mono_text);
+    cgui_text_destroy(monospace);
     cgui_text_destroy(engine);
     return failed ? 1 : 0;
 }

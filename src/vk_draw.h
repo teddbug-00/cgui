@@ -1,11 +1,5 @@
 /**
- * vk_draw.h – 2D UI drawing with real Gaussian soft shadows
- *
- * Shadow path (Core Animation style):
- *   1. Render shape mask to offscreen texture
- *   2. Separable Gaussian blur (H then V)
- *   3. Composite blurred alpha tinted with shadow colour
- *   4. Draw solid rounded body on top
+ * vk_draw.h – 2D UI drawing with Gaussian soft shadows and batched text.
  */
 
 #ifndef VK_DRAW_H
@@ -21,43 +15,41 @@
 typedef struct VkDraw {
     VkContext *ctx;
 
-    /* SDF rounded-rect pipeline (mask + body) */
+    /* Rounded-rectangle body and offscreen shadow-mask pipelines */
     VkShaderModule   rr_vert;
     VkShaderModule   rr_frag;
     VkPipelineLayout rr_layout;
     VkPipeline       rr_pipeline;
+    VkPipeline       mask_pipeline;
 
-    /* Separable Gaussian blur */
     VkShaderModule   blur_vert;
     VkShaderModule   blur_frag;
     VkPipelineLayout blur_layout;
     VkPipeline       blur_pipeline;
     VkDescriptorSetLayout blur_set_layout;
-    VkDescriptorPool blur_pool;
-    VkDescriptorSet  blur_set_a;   /* sample mask  */
-    VkDescriptorSet  blur_set_b;   /* sample temp  */
+    VkDescriptorSet  blur_set_a;
+    VkDescriptorSet  blur_set_b;
     VkSampler        sampler;
 
-    /* Blit (composite blurred shadow) */
     VkShaderModule   blit_vert;
     VkShaderModule   blit_frag;
+    VkShaderModule   icon_frag;
     VkPipelineLayout blit_layout;
     VkPipeline       blit_pipeline;
+    VkPipeline       icon_pipeline;
     VkDescriptorSetLayout blit_set_layout;
     VkDescriptorSet  blit_set;
+    VkDescriptorPool shadow_pool;
 
-    /* Offscreen targets (swapchain-sized, R8G8B8A8) */
     VkImage        mask_image;
     VkDeviceMemory mask_memory;
     VkImageView    mask_view;
     VkFramebuffer  mask_fb;
-
     VkImage        temp_image;
     VkDeviceMemory temp_memory;
     VkImageView    temp_view;
     VkFramebuffer  temp_fb;
-
-    VkRenderPass   offscreen_pass;  /* clear/load colour */
+    VkRenderPass   offscreen_pass;
     uint32_t       offscreen_w;
     uint32_t       offscreen_h;
 
@@ -76,6 +68,14 @@ typedef struct VkDraw {
     VkDescriptorPool      txt_pool;
     VkDescriptorSet       txt_set;    /* bound to atlas image */
     VkSampler             txt_sampler;
+
+    /* Per-frame host-visible text vertex chunks; frame fences protect reuse. */
+    void                 *txt_vertex_frames[VK_MAX_FRAMES_IN_FLIGHT];
+
+    /* Private state for the optional two-pass shadow batch. */
+    void                 *shadow_batch;
+    void                 *icons;
+    void                 *text_fonts;
 } VkDraw;
 
 typedef struct VkDrawShaders {
@@ -85,6 +85,7 @@ typedef struct VkDrawShaders {
     const uint32_t *blur_frag; size_t blur_frag_n;
     const uint32_t *blit_vert; size_t blit_vert_n;
     const uint32_t *blit_frag; size_t blit_frag_n;
+    const uint32_t *icon_frag; size_t icon_frag_n;
     const uint32_t *txt_vert;  size_t txt_vert_n;
     const uint32_t *txt_frag;  size_t txt_frag_n;
 } VkDrawShaders;
@@ -92,8 +93,24 @@ typedef struct VkDrawShaders {
 bool vk_draw_create(VkDraw *out, VkContext *ctx, const VkDrawShaders *shaders);
 void vk_draw_destroy(VkDraw *d);
 
-/** Recreate offscreen images after swapchain resize. */
+/** Recreate offscreen shadow images after swapchain resize. */
 bool vk_draw_resize(VkDraw *d);
+
+typedef struct VkDrawIcon VkDrawIcon;
+typedef struct VkDrawFont VkDrawFont;
+
+/**
+ * Load and cache an SVG icon rasterized to the requested maximum dimension
+ * in pixels (1-512). Icons of the same path and size share a cached texture.
+ * Call outside an open frame.
+ */
+VkDrawIcon *vk_draw_load_icon(VkDraw *d, const char *path,
+                              uint32_t raster_size);
+
+/** Draw a loaded image icon tinted by the supplied RGBA color. */
+void vk_draw_icon(VkDraw *d, const VkDrawIcon *icon,
+                  float x, float y, float w, float h,
+                  const uint8_t tint[4]);
 
 void vk_draw_rounded_rect(VkDraw *d,
                           float x, float y, float w, float h,
@@ -102,6 +119,16 @@ void vk_draw_rounded_rect(VkDraw *d,
 
 void vk_draw_style_box(VkDraw *d, float x, float y, float w, float h,
                        const Style *s);
+
+/**
+ * Collect shadows during a render-only widget traversal, prepare shared
+ * mask/blur passes, then traverse again to draw widget contents. Draw
+ * callbacks must not mutate widget state or invoke application callbacks.
+ * If preparation fails, draw once normally for per-box shadows.
+ */
+bool vk_draw_begin_shadow_batch(VkDraw *d);
+bool vk_draw_prepare_shadow_batch(VkDraw *d);
+void vk_draw_end_shadow_batch(VkDraw *d);
 
 typedef enum CguiTextAlign {
     CGUI_ALIGN_LEFT   = 0,
@@ -126,6 +153,15 @@ bool vk_draw_text_centered(VkDraw *d, const char *utf8,
 bool vk_draw_text_styled(VkDraw *d, const char *utf8, float x, float y,
                          float pixel_size, uint32_t style_flags,
                          const uint8_t rgba[4]);
+
+/** Load and cache a system font family for per-run text rendering. */
+VkDrawFont *vk_draw_load_font(VkDraw *d, const char *family);
+
+/** Draw text with a loaded font family and the regular/bold/italic style flags. */
+bool vk_draw_text_font_styled(VkDraw *d, const VkDrawFont *font,
+                              const char *utf8, float x, float y,
+                              float pixel_size, uint32_t style_flags,
+                              const uint8_t rgba[4]);
 
 bool vk_draw_text_centered_styled(VkDraw *d, const char *utf8,
                                   float x, float y, float w, float h,
