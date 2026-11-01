@@ -52,6 +52,7 @@ endforeach
 sources = files(
   'src/main.c',
   'src/gui.c',
+  'src/layout.c',
   'src/style.c',
   'src/text.c',
   'src/glyph_atlas.c',
@@ -86,12 +87,32 @@ executable(
   install: false,
 )
 
+executable(
+  'cgui-layout-demo',
+  ['demos/layout_demo.c', 'src/gui.c', 'src/layout.c', 'src/style.c',
+   'src/text.c', 'src/glyph_atlas.c', 'src/vk_context.c', 'src/vk_draw.c',
+   'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
 gui_test = executable(
   'cgui-gui-test',
-  ['tests/gui_test.c', 'src/gui.c', 'src/style.c'],
+  ['tests/gui_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
   include_directories: include_directories('src'),
+  dependencies: [m_dep],
 )
 test('widget-hierarchy', gui_test)
+
+layout_test = executable(
+  'cgui-layout-test',
+  ['tests/layout_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
+  include_directories: include_directories('src'),
+  dependencies: [m_dep],
+)
+test('widget-layout', layout_test)
 
 text_test = executable(
   'cgui-text-test',

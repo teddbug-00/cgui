@@ -33,6 +33,7 @@ typedef struct Widget Widget;
 typedef void (*WidgetDrawFn)(Widget *self, struct VkContext *vk);
 typedef void (*WidgetEventFn)(Widget *self, const void *ev);
 typedef void (*WidgetDestroyFn)(Widget *self);
+typedef void (*WidgetLayoutFn)(Widget *self);
 
 struct Widget {
     Rect   bounds;
@@ -46,6 +47,7 @@ struct Widget {
     WidgetDrawFn    draw;
     WidgetEventFn   handle_event;
     WidgetDestroyFn destroy;
+    WidgetLayoutFn  layout;
 };
 
 /* ------------------------------------------------------------------ */
@@ -57,6 +59,10 @@ Widget *widget_create(void);
 bool    widget_add_child(Widget *parent, Widget *child);
 /** Detach a child without destroying it. */
 bool    widget_remove_child(Widget *parent, Widget *child);
+/** Set bounds and update the containing widget tree's layout. */
+void    widget_set_bounds(Widget *widget, Rect bounds);
+/** Recalculate layout callbacks throughout this widget subtree. */
+void    widget_layout(Widget *root);
 
 void widget_draw_noop(Widget *self, struct VkContext *vk);
 void widget_event_noop(Widget *self, const void *ev);

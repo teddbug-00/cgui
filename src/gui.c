@@ -48,6 +48,9 @@ bool widget_add_child(Widget *parent, Widget *child)
 
     parent->children[parent->child_count++] = child;
     child->parent = parent;
+    Widget *root = parent;
+    while (root->parent) root = root->parent;
+    widget_layout(root);
     return true;
 }
 
@@ -65,7 +68,28 @@ bool widget_remove_child(Widget *parent, Widget *child)
             (parent->child_count - index - 1) * sizeof(*parent->children));
     --parent->child_count;
     child->parent = NULL;
+    Widget *root = parent;
+    while (root->parent) root = root->parent;
+    widget_layout(root);
     return true;
+}
+
+void widget_set_bounds(Widget *widget, Rect bounds)
+{
+    if (!widget) return;
+    widget->bounds = bounds;
+    Widget *root = widget;
+    while (root->parent) root = root->parent;
+    widget_layout(root);
+}
+
+void widget_layout(Widget *root)
+{
+    if (!root) return;
+    if (root->layout) root->layout(root);
+    for (size_t i = 0; i < root->child_count; ++i) {
+        widget_layout(root->children[i]);
+    }
 }
 
 void widget_draw_noop(Widget *self, struct VkContext *vk)
