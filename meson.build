@@ -63,6 +63,7 @@ sources = files(
   'src/toggle.c',
   'src/slider.c',
   'src/scroll_view.c',
+  'src/tab_view.c',
   'src/text_field.c',
   'src/tree_view.c',
   'src/vk_context.c',
@@ -122,6 +123,17 @@ executable(
   install: false,
 )
 
+executable(
+  'cgui-tab-view-demo',
+  ['demos/tab_view_demo.c', 'src/gui.c', 'src/tab_view.c', 'src/style.c',
+   'src/text.c', 'src/glyph_atlas.c', 'src/vk_context.c', 'src/vk_draw.c',
+   'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
 gui_test = executable(
   'cgui-gui-test',
   ['tests/gui_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
@@ -155,6 +167,16 @@ scroll_view_test = executable(
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )
 test('scroll-view-widget', scroll_view_test)
+
+tab_view_test = executable(
+  'cgui-tab-view-test',
+  ['tests/tab_view_test.c', 'src/tab_view.c', 'src/gui.c', 'src/style.c',
+   'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c',
+   'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('tab-view-widget', tab_view_test)
 
 text_test = executable(
   'cgui-text-test',
