@@ -214,6 +214,72 @@ int main(void)
     widget_destroy(taken);
     widget_destroy(tab_view_widget(view));
 
+    TabViewStyle capped_style = tab_view_style_default();
+    capped_style.width_mode = TAB_VIEW_WIDTH_CAPPED;
+    capped_style.tab_max_width = 130.0f;
+    view = tab_view_create((Rect){0.0f, 0.0f, 160.0f, 100.0f},
+                           &capped_style);
+    first = content_create();
+    second = content_create();
+    third = content_create();
+    if (!view || !first || !second || !third) {
+        fprintf(stderr, "Failed to create capped-width tabs\n");
+        widget_destroy(tab_view_widget(view));
+        widget_destroy((Widget *)first);
+        widget_destroy((Widget *)second);
+        widget_destroy((Widget *)third);
+        return 1;
+    }
+    if (!tab_view_add_tab(view, "first_document_with_long_name.c",
+                          (Widget *)first)) {
+        fprintf(stderr, "Failed to add first capped-width tab\n");
+        widget_destroy(tab_view_widget(view));
+        widget_destroy((Widget *)first);
+        widget_destroy((Widget *)second);
+        widget_destroy((Widget *)third);
+        return 1;
+    }
+    if (!tab_view_add_tab(view, "second_document_with_long_name.c",
+                          (Widget *)second)) {
+        fprintf(stderr, "Failed to add second capped-width tab\n");
+        widget_destroy(tab_view_widget(view));
+        widget_destroy((Widget *)second);
+        widget_destroy((Widget *)third);
+        return 1;
+    }
+    if (!tab_view_add_tab(view, "third_document_with_long_name.c",
+                          (Widget *)third)) {
+        fprintf(stderr, "Failed to add third capped-width tab\n");
+        widget_destroy(tab_view_widget(view));
+        widget_destroy((Widget *)third);
+        return 1;
+    }
+    event = (SDL_Event){0};
+    event.type = SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.mouse_x = 80.0f;
+    event.wheel.mouse_y = 12.0f;
+    event.wheel.y = -10.0f;
+    tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
+    event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    event.button.button = SDL_BUTTON_LEFT;
+    event.button.x = 50;
+    event.button.y = 12;
+    tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
+    if (tab_view_active_index(view) != 2) {
+        fprintf(stderr, "Scrolling did not reveal the final capped tab (%zu)\n",
+                tab_view_active_index(view));
+        widget_destroy(tab_view_widget(view));
+        return 1;
+    }
+    widget_destroy(tab_view_widget(view));
+
+    capped_style.width_mode = (TabViewWidthMode)99;
+    if (tab_view_create((Rect){0.0f, 0.0f, 160.0f, 100.0f},
+                        &capped_style) != NULL) {
+        fprintf(stderr, "TabView accepted an invalid width mode\n");
+        return 1;
+    }
+
     view = tab_view_create((Rect){0.0f, 0.0f, 200.0f, 100.0f}, NULL);
     first = content_create();
     if (!view || !first ||
@@ -226,7 +292,7 @@ int main(void)
     event = (SDL_Event){0};
     event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     event.button.button = SDL_BUTTON_LEFT;
-    event.button.x = 88;
+    event.button.x = 101;
     event.button.y = 12;
     tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
     event.type = SDL_EVENT_MOUSE_BUTTON_UP;

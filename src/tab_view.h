@@ -10,6 +10,13 @@
 
 typedef struct TabView TabView;
 
+typedef enum TabViewWidthMode {
+    /** Tabs use their full title/icon/close-button width and may scroll. */
+    TAB_VIEW_WIDTH_FIT_CONTENT,
+    /** Tabs stop at tab_max_width and long titles are ellipsized. */
+    TAB_VIEW_WIDTH_CAPPED,
+} TabViewWidthMode;
+
 typedef struct TabViewStyle {
     float tab_height;
     float tab_min_width;
@@ -18,6 +25,7 @@ typedef struct TabViewStyle {
     float tab_icon_size;
     float horizontal_padding;
     float corner_radius;
+    TabViewWidthMode width_mode;
     uint8_t background[4];
     uint8_t strip_background[4];
     uint8_t active_tab[4];

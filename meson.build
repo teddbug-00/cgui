@@ -135,6 +135,17 @@ executable(
   install: false,
 )
 
+executable(
+  'cgui-button-demo',
+  ['demos/button_demo.c', 'src/button.c', 'src/gui.c', 'src/style.c',
+   'src/vk_context.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c',
+   'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
 gui_test = executable(
   'cgui-gui-test',
   ['tests/gui_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],

@@ -117,30 +117,24 @@ static DemoDocument *document_create(const char *name, const char *source,
     return document;
 }
 
-static bool create_tabs(TabView **out, float width, float height)
+static bool create_tabs(TabView **out, Rect bounds, const TabViewStyle *style,
+                        const VkDrawIcon *file_icon,
+                        const VkDrawIcon *close_icon)
 {
     static const uint8_t colors[][4] = {
         {255, 255, 255, 255}, {250, 252, 255, 255}, {255, 252, 247, 255},
     };
-    static const char *titles[] = {"main.c", "layout.c", "scroll_view.c"};
+    static const char *titles[] = {
+        "main.c", "layout_engine.c", "scroll_view_kinetic_physics.c",
+    };
     static const char *sources[] = {
         "int main(void) {\n    return 0;\n}",
         "void layout_reflow(Widget *root) {\n    widget_layout(root);\n}",
         "void scroll_view_update(ScrollView *view) {\n    advance_momentum(view);\n}",
     };
-    TabView *view = tab_view_create(
-        (Rect){0.0f, 0.0f, width, height}, NULL);
+    TabView *view = tab_view_create(bounds, style);
     if (!view) return false;
-    VkDrawIcon *file_icon =
-        vk_draw_load_icon(g_draw, "assets/icons/file-text.svg", 16);
-    VkDrawIcon *lucide_x_icon =
-        vk_draw_load_icon(g_draw, "assets/icons/lucide-x.svg", 12);
-    if (!file_icon || !lucide_x_icon) {
-        fprintf(stderr, "Failed to load TabView icons\n");
-        widget_destroy(tab_view_widget(view));
-        return false;
-    }
-    tab_view_set_close_icon(view, lucide_x_icon);
+    tab_view_set_close_icon(view, close_icon);
     for (size_t i = 0; i < 3; ++i) {
         DemoDocument *document = document_create(titles[i], sources[i],
                                                   colors[i]);
@@ -181,7 +175,7 @@ int main(void)
     bool resized = false;
     bool running = true;
     int result = EXIT_FAILURE;
-    TabView *view = NULL;
+    TabView *views[2] = {NULL, NULL};
 
     if (!vk_context_create(&context, window)) goto cleanup;
     context_created = true;
@@ -197,8 +191,27 @@ int main(void)
         free(words[i]);
         words[i] = NULL;
     }
-    if (!create_tabs(&view, (float)context.swapchain_extent.width,
-                     (float)context.swapchain_extent.height)) {
+    VkDrawIcon *file_icon =
+        vk_draw_load_icon(&draw, "assets/icons/file-text.svg", 16);
+    VkDrawIcon *lucide_x_icon =
+        vk_draw_load_icon(&draw, "assets/icons/lucide-x.svg", 12);
+    if (!file_icon || !lucide_x_icon) {
+        fprintf(stderr, "Failed to load TabView icons\n");
+        goto cleanup;
+    }
+    float half_width = (float)context.swapchain_extent.width * 0.5f;
+    float view_y = 28.0f;
+    float view_height = fmaxf(
+        0.0f, (float)context.swapchain_extent.height - view_y);
+    TabViewStyle fit_style = tab_view_style_default();
+    TabViewStyle capped_style = fit_style;
+    capped_style.width_mode = TAB_VIEW_WIDTH_CAPPED;
+    capped_style.tab_max_width = 170.0f;
+    if (!create_tabs(&views[0], (Rect){0.0f, view_y, half_width, view_height},
+                     &fit_style, file_icon, lucide_x_icon) ||
+        !create_tabs(&views[1],
+                     (Rect){half_width, view_y, half_width, view_height},
+                     &capped_style, file_icon, lucide_x_icon)) {
         fprintf(stderr, "Failed to construct TabView showcase\n");
         goto cleanup;
     }
@@ -212,7 +225,12 @@ int main(void)
                 event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
                 resized = true;
             }
-            tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
+            for (size_t i = 0; i < 2; ++i) {
+                if (views[i]) {
+                    tab_view_widget(views[i])->handle_event(
+                        tab_view_widget(views[i]), &event);
+                }
+            }
         }
         if (resized) {
             int width = 0;
@@ -224,10 +242,13 @@ int main(void)
                     result = EXIT_FAILURE;
                     break;
                 }
-                widget_set_bounds(tab_view_widget(view),
-                    (Rect){0.0f, 0.0f,
-                           (float)context.swapchain_extent.width,
-                           (float)context.swapchain_extent.height});
+                half_width = (float)context.swapchain_extent.width * 0.5f;
+                view_height = fmaxf(
+                    0.0f, (float)context.swapchain_extent.height - view_y);
+                widget_set_bounds(tab_view_widget(views[0]),
+                    (Rect){0.0f, view_y, half_width, view_height});
+                widget_set_bounds(tab_view_widget(views[1]),
+                    (Rect){half_width, view_y, half_width, view_height});
                 resized = false;
             }
         }
@@ -235,7 +256,16 @@ int main(void)
             resized = true;
             continue;
         }
-        tab_view_widget(view)->draw(tab_view_widget(view), &context);
+        static const uint8_t heading_color[4] = {53, 58, 67, 255};
+        (void)vk_draw_text(&draw, "Fit content (scroll tabs to view all)",
+                           14.0f, 7.0f, 13.0f, heading_color);
+        (void)vk_draw_text(&draw, "Capped width (titles ellipsized)",
+                           half_width + 14.0f, 7.0f, 13.0f,
+                           heading_color);
+        for (size_t i = 0; i < 2; ++i) {
+            tab_view_widget(views[i])->draw(tab_view_widget(views[i]),
+                                             &context);
+        }
         if (!vk_context_end_frame(&context)) resized = true;
     }
 
@@ -243,7 +273,8 @@ cleanup:
     g_draw = NULL;
     tab_view_set_draw_context(NULL);
     for (size_t i = 0; i < 9; ++i) free(words[i]);
-    widget_destroy(tab_view_widget(view));
+    for (size_t i = 0; i < 2; ++i)
+        widget_destroy(tab_view_widget(views[i]));
     if (draw_created) vk_draw_destroy(&draw);
     if (context_created) vk_context_destroy(&context);
     SDL_DestroyWindow(window);

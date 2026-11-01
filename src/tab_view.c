@@ -11,8 +11,12 @@
 
 #include "button.h"
 
+#define TAB_CLOSE_BUTTON_SIZE 20.0f
+#define TAB_TITLE_CLOSE_GAP 6.0f
+
 typedef struct TabItem {
     char *title;
+    char *display_title;
     Widget *content;
     Button *close_button;
     const VkDrawIcon *icon;
@@ -27,6 +31,7 @@ struct TabView {
     size_t tab_capacity;
     size_t active_index;
     size_t hovered_index;
+    float scroll_offset;
     const VkDrawIcon *close_icon;
     bool focused;
     TabViewSelectionFn on_selection;
@@ -60,6 +65,7 @@ TabViewStyle tab_view_style_default(void)
         .tab_icon_size = 15.0f,
         .horizontal_padding = 14.0f,
         .corner_radius = 6.0f,
+        .width_mode = TAB_VIEW_WIDTH_FIT_CONTENT,
         .background = {255, 255, 255, 255},
         .strip_background = {229, 230, 233, 255},
         .active_tab = {255, 255, 255, 255},
@@ -86,6 +92,11 @@ static void tab_view_layout(Widget *self)
         };
         widget_layout(view->tabs[i].content);
     }
+    float total_width = 0.0f;
+    for (size_t i = 0; i < view->tab_count; ++i)
+        total_width += view->tabs[i].width;
+    view->scroll_offset = fminf(view->scroll_offset,
+                                fmaxf(0.0f, total_width - self->bounds.w));
 }
 
 static void tab_view_destroy(Widget *self)
@@ -93,19 +104,19 @@ static void tab_view_destroy(Widget *self)
     TabView *view = (TabView *)self;
     for (size_t i = 0; i < view->tab_count; ++i) {
         free(view->tabs[i].title);
+        free(view->tabs[i].display_title);
         widget_destroy((Widget *)view->tabs[i].close_button);
     }
     free(view->tabs);
 }
 
-static float tab_width_scale(const TabView *view)
+static float tab_total_width(const TabView *view)
 {
     float total_width = 0.0f;
     for (size_t i = 0; i < view->tab_count; ++i) {
         total_width += view->tabs[i].width;
     }
-    return total_width > view->base.bounds.w && total_width > 0.0f
-        ? view->base.bounds.w / total_width : 1.0f;
+    return total_width;
 }
 
 static float tab_item_width(const TabView *view, const char *title, bool icon)
@@ -121,31 +132,90 @@ static float tab_item_width(const TabView *view, const char *title, bool icon)
         }
     }
     float icon_width = icon ? view->view_style.tab_icon_size + 7.0f : 0.0f;
-    return fminf(view->view_style.tab_max_width,
-        fmaxf(view->view_style.tab_min_width,
-              title_width + icon_width +
-                  view->view_style.horizontal_padding * 2.0f + 20.0f));
+    float width = fmaxf(view->view_style.tab_min_width,
+        title_width + icon_width +
+            view->view_style.horizontal_padding * 2.0f +
+            TAB_CLOSE_BUTTON_SIZE + TAB_TITLE_CLOSE_GAP);
+    if (view->view_style.width_mode == TAB_VIEW_WIDTH_CAPPED) {
+        width = fminf(view->view_style.tab_max_width, width);
+    }
+    return width;
+}
+
+static size_t utf8_previous_index(const char *text, size_t index)
+{
+    if (index == 0) return 0;
+    --index;
+    while (index > 0 && ((unsigned char)text[index] & 0xc0u) == 0x80u)
+        --index;
+    return index;
+}
+
+static float measure_tab_title(const TabView *view, const char *text)
+{
+    float width = (float)strlen(text) * view->view_style.tab_font_size * 0.55f;
+    if (g_draw) {
+        float measured_width = 0.0f;
+        float measured_height = 0.0f;
+        if (vk_draw_measure_text(g_draw, text, view->view_style.tab_font_size,
+                                 0, &measured_width, &measured_height)) {
+            width = measured_width;
+        }
+    }
+    return width;
+}
+
+static bool update_display_title(TabView *view, size_t index)
+{
+    TabItem *item = &view->tabs[index];
+    char *display = NULL;
+    if (view->view_style.width_mode == TAB_VIEW_WIDTH_CAPPED) {
+        float icon_width =
+            item->icon ? view->view_style.tab_icon_size + 7.0f : 0.0f;
+        float available =
+            item->width - view->view_style.horizontal_padding * 2.0f -
+            icon_width - TAB_CLOSE_BUTTON_SIZE - TAB_TITLE_CLOSE_GAP;
+        if (available > 0.0f &&
+            measure_tab_title(view, item->title) > available) {
+            size_t title_length = strlen(item->title);
+            display = malloc(title_length + 4);
+            if (!display) return false;
+            size_t prefix_length = title_length;
+            do {
+                prefix_length = utf8_previous_index(item->title,
+                                                    prefix_length);
+                memcpy(display, item->title, prefix_length);
+                memcpy(display + prefix_length, "...", 4);
+            } while (prefix_length > 0 &&
+                     measure_tab_title(view, display) > available);
+            if (measure_tab_title(view, display) > available) {
+                free(display);
+                display = NULL;
+            }
+        }
+    }
+    free(item->display_title);
+    item->display_title = display;
+    return true;
 }
 
 static Rect tab_item_bounds(const TabView *view, size_t index)
 {
-    float scale = tab_width_scale(view);
-    float x = view->base.bounds.x;
+    float x = view->base.bounds.x - view->scroll_offset;
     for (size_t i = 0; i < index; ++i) {
-        x += view->tabs[i].width * scale;
+        x += view->tabs[i].width;
     }
     return (Rect) {
         .x = x,
         .y = view->base.bounds.y,
-        .w = view->tabs[index].width * scale,
+        .w = view->tabs[index].width,
         .h = view->view_style.tab_height,
     };
 }
 
-static Rect tab_close_button_bounds(const TabView *view, size_t index)
+static Rect tab_close_button_bounds(const TabView *view, Rect tab)
 {
-    Rect tab = tab_item_bounds(view, index);
-    float size = fminf(20.0f, tab.w);
+    float size = fminf(TAB_CLOSE_BUTTON_SIZE, tab.w);
     float padding = fminf(view->view_style.horizontal_padding,
                           fmaxf(0.0f, tab.w - size));
     return (Rect) {
@@ -158,10 +228,31 @@ static Rect tab_close_button_bounds(const TabView *view, size_t index)
 
 static void sync_close_button_bounds(TabView *view)
 {
+    float tab_x = view->base.bounds.x - view->scroll_offset;
     for (size_t i = 0; i < view->tab_count; ++i) {
+        Rect tab = {
+            .x = tab_x,
+            .y = view->base.bounds.y,
+            .w = view->tabs[i].width,
+            .h = view->view_style.tab_height,
+        };
         view->tabs[i].close_button->base.bounds =
-            tab_close_button_bounds(view, i);
+            tab_close_button_bounds(view, tab);
+        tab_x += tab.w;
     }
+}
+
+static void ensure_tab_visible(TabView *view, size_t index)
+{
+    Rect tab = tab_item_bounds(view, index);
+    if (tab.x < view->base.bounds.x) {
+        view->scroll_offset -= view->base.bounds.x - tab.x;
+    } else if (tab.x + tab.w > view->base.bounds.x + view->base.bounds.w) {
+        view->scroll_offset +=
+            tab.x + tab.w - (view->base.bounds.x + view->base.bounds.w);
+    }
+    view->scroll_offset = fminf(fmaxf(0.0f, view->scroll_offset),
+        fmaxf(0.0f, tab_total_width(view) - view->base.bounds.w));
 }
 
 static void close_tab_clicked(Button *button, void *userdata)
@@ -194,14 +285,13 @@ static void tab_view_draw(Widget *self, struct VkContext *context)
     if (view->tab_count > 0 &&
         vk_draw_clip_push(g_draw, bounds->x, bounds->y,
                           bounds->w, tab_height)) {
-        float scale = tab_width_scale(view);
-        float tab_x = bounds->x;
+        float tab_x = bounds->x - view->scroll_offset;
         sync_close_button_bounds(view);
         for (size_t i = 0; i < view->tab_count; ++i) {
             Rect tab = {
                 .x = tab_x,
                 .y = bounds->y,
-                .w = view->tabs[i].width * scale,
+                .w = view->tabs[i].width,
                 .h = view->view_style.tab_height,
             };
             tab_x += tab.w;
@@ -230,7 +320,7 @@ static void tab_view_draw(Widget *self, struct VkContext *context)
                 text_x += icon_size + 7.0f;
             }
             float text_width = fmaxf(
-                0.0f, close_bounds.x - text_x - 6.0f);
+                0.0f, close_bounds.x - text_x - TAB_TITLE_CLOSE_GAP);
             Rect text_clip = {
                 text_x, tab.y, text_width, tab.h,
             };
@@ -238,7 +328,10 @@ static void tab_view_draw(Widget *self, struct VkContext *context)
                 vk_draw_clip_push(g_draw, text_clip.x, text_clip.y,
                                   text_clip.w, text_clip.h)) {
                 (void)vk_draw_text_aligned_styled(
-                    g_draw, view->tabs[i].title, text_x, tab.y,
+                    g_draw,
+                    view->tabs[i].display_title
+                        ? view->tabs[i].display_title : view->tabs[i].title,
+                    text_x, tab.y,
                     text_width, tab.h, view->view_style.tab_font_size, 0,
                     active ? view->view_style.active_text :
                              view->view_style.text,
@@ -262,12 +355,9 @@ static void tab_view_draw(Widget *self, struct VkContext *context)
         vk_draw_clip_pop(g_draw);
     }
     if (view->active_index < view->tab_count) {
-        float active_end = bounds->x;
-        for (size_t i = 0; i <= view->active_index; ++i) {
-            active_end += view->tabs[i].width * tab_width_scale(view);
-        }
-        float active_start = active_end -
-            view->tabs[view->active_index].width * tab_width_scale(view);
+        Rect active_tab = tab_item_bounds(view, view->active_index);
+        float active_start = active_tab.x;
+        float active_end = active_tab.x + active_tab.w;
         float line_y = bounds->y + tab_height - 1.0f;
         if (active_start > bounds->x) {
             vk_draw_rounded_rect(g_draw, bounds->x, line_y,
@@ -326,6 +416,20 @@ static void tab_view_event(Widget *self, const void *event)
     }
 
     sync_close_button_bounds(view);
+    if (ev->type == SDL_EVENT_MOUSE_WHEEL &&
+        ev->wheel.mouse_y >= self->bounds.y &&
+        ev->wheel.mouse_y < self->bounds.y + view->view_style.tab_height &&
+        ev->wheel.mouse_x >= self->bounds.x &&
+        ev->wheel.mouse_x < self->bounds.x + self->bounds.w) {
+        float direction = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+            ? -1.0f : 1.0f;
+        float delta = fabsf(ev->wheel.x) > 0.01f
+            ? ev->wheel.x : -ev->wheel.y;
+        view->scroll_offset = fminf(
+            fmaxf(0.0f, view->scroll_offset + direction * delta * 40.0f),
+            fmaxf(0.0f, tab_total_width(view) - self->bounds.w));
+        return;
+    }
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         for (size_t i = 0; i < view->tab_count; ++i) {
             button_event((Widget *)view->tabs[i].close_button, event);
@@ -352,13 +456,12 @@ static void tab_view_event(Widget *self, const void *event)
             y < self->bounds.y + view->view_style.tab_height &&
             x >= self->bounds.x && x < self->bounds.x + self->bounds.w &&
             view->tab_count > 0) {
-            float scale = tab_width_scale(view);
-            float tab_x = self->bounds.x;
+            float tab_x = self->bounds.x - view->scroll_offset;
             for (size_t i = 0; i < view->tab_count; ++i) {
                 Rect tab = {
                     .x = tab_x,
                     .y = self->bounds.y,
-                    .w = view->tabs[i].width * scale,
+                    .w = view->tabs[i].width,
                     .h = view->view_style.tab_height,
                 };
                 if (point_in_rect(x, y, &tab)) {
@@ -383,14 +486,13 @@ static void tab_view_event(Widget *self, const void *event)
             x >= self->bounds.x &&
             x < self->bounds.x + self->bounds.w &&
             view->tab_count > 0) {
-            float scale = tab_width_scale(view);
-            float tab_x = self->bounds.x;
+            float tab_x = self->bounds.x - view->scroll_offset;
             size_t index = SIZE_MAX;
             for (size_t i = 0; i < view->tab_count; ++i) {
                 Rect tab_bounds = {
                     .x = tab_x,
                     .y = self->bounds.y,
-                    .w = view->tabs[i].width * scale,
+                    .w = view->tabs[i].width,
                     .h = view->view_style.tab_height,
                 };
                 if (point_in_rect(x, y, &tab_bounds)) {
@@ -398,7 +500,7 @@ static void tab_view_event(Widget *self, const void *event)
                     break;
                 }
                 tab_x += tab_bounds.w;
-            };
+            }
             if (index == SIZE_MAX) return;
             view->hovered_index = index;
             Rect close_bounds =
@@ -407,6 +509,7 @@ static void tab_view_event(Widget *self, const void *event)
                 return;
             } else {
                 (void)tab_view_set_active(view, index);
+                ensure_tab_visible(view, index);
             }
             return;
         }
@@ -441,7 +544,9 @@ TabView *tab_view_create(Rect bounds, const TabViewStyle *style)
         !isfinite(resolved.tab_icon_size) || resolved.tab_icon_size <= 0.0f ||
         !isfinite(resolved.horizontal_padding) ||
         resolved.horizontal_padding < 0.0f ||
-        !isfinite(resolved.corner_radius) || resolved.corner_radius < 0.0f) {
+        !isfinite(resolved.corner_radius) || resolved.corner_radius < 0.0f ||
+        (resolved.width_mode != TAB_VIEW_WIDTH_FIT_CONTENT &&
+         resolved.width_mode != TAB_VIEW_WIDTH_CAPPED)) {
         return NULL;
     }
 
@@ -479,7 +584,8 @@ bool tab_view_add_tab(TabView *view, const char *title, Widget *content)
         .text_color = {79, 81, 85, 255},
     };
     Button *close_button = button_create(
-        (Rect){0.0f, 0.0f, 20.0f, 20.0f}, close_style, "×");
+        (Rect){0.0f, 0.0f, TAB_CLOSE_BUTTON_SIZE, TAB_CLOSE_BUTTON_SIZE},
+        close_style, "×");
     if (!close_button) {
         free(title_copy);
         return false;
@@ -513,12 +619,20 @@ bool tab_view_add_tab(TabView *view, const char *title, Widget *content)
         free(title_copy);
         return false;
     }
-    view->tabs[view->tab_count++] = (TabItem) {
+    size_t index = view->tab_count++;
+    view->tabs[index] = (TabItem) {
         .title = title_copy,
         .content = content,
         .close_button = close_button,
         .width = tab_width,
     };
+    if (!update_display_title(view, index)) {
+        --view->tab_count;
+        (void)widget_remove_child(&view->base, content);
+        widget_destroy((Widget *)close_button);
+        free(title_copy);
+        return false;
+    }
     if (view->tab_count == 1) view->active_index = 0;
     tab_view_layout(&view->base);
     return true;
@@ -527,9 +641,17 @@ bool tab_view_add_tab(TabView *view, const char *title, Widget *content)
 bool tab_view_set_icon(TabView *view, size_t index, const VkDrawIcon *icon)
 {
     if (!view || index >= view->tab_count) return false;
+    const VkDrawIcon *old_icon = view->tabs[index].icon;
+    float old_width = view->tabs[index].width;
     view->tabs[index].icon = icon;
     view->tabs[index].width =
         tab_item_width(view, view->tabs[index].title, icon != NULL);
+    if (!update_display_title(view, index)) {
+        view->tabs[index].icon = old_icon;
+        view->tabs[index].width = old_width;
+        return false;
+    }
+    tab_view_layout(&view->base);
     return true;
 }
 
@@ -555,6 +677,7 @@ Widget *tab_view_take_tab(TabView *view, size_t index)
 
     bool removed_active = index == view->active_index;
     free(view->tabs[index].title);
+    free(view->tabs[index].display_title);
     widget_destroy((Widget *)view->tabs[index].close_button);
     memmove(&view->tabs[index], &view->tabs[index + 1],
             (view->tab_count - index - 1) * sizeof(*view->tabs));
@@ -574,6 +697,7 @@ Widget *tab_view_take_tab(TabView *view, size_t index)
 
     if (!widget_remove_child(&view->base, content)) return NULL;
     tab_view_layout(&view->base);
+    if (view->tab_count > 0) ensure_tab_visible(view, view->active_index);
     notify_selection(view);
     return content;
 }
@@ -583,7 +707,10 @@ bool tab_view_set_active(TabView *view, size_t index)
     if (!view || index >= view->tab_count) return false;
     if (view->active_index != index) {
         view->active_index = index;
+        ensure_tab_visible(view, index);
         notify_selection(view);
+    } else {
+        ensure_tab_visible(view, index);
     }
     return true;
 }
