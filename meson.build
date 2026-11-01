@@ -125,7 +125,8 @@ executable(
 
 executable(
   'cgui-tab-view-demo',
-  ['demos/tab_view_demo.c', 'src/gui.c', 'src/tab_view.c', 'src/style.c',
+  ['demos/tab_view_demo.c', 'src/gui.c', 'src/tab_view.c', 'src/button.c',
+   'src/style.c',
    'src/text.c', 'src/glyph_atlas.c', 'src/vk_context.c', 'src/vk_draw.c',
    'src/spv_loader.c'],
   spv_targets,
@@ -170,7 +171,8 @@ test('scroll-view-widget', scroll_view_test)
 
 tab_view_test = executable(
   'cgui-tab-view-test',
-  ['tests/tab_view_test.c', 'src/tab_view.c', 'src/gui.c', 'src/style.c',
+  ['tests/tab_view_test.c', 'src/tab_view.c', 'src/button.c', 'src/gui.c',
+   'src/style.c',
    'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c',
    'src/spv_loader.c'],
   include_directories: include_directories('src'),

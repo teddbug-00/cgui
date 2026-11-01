@@ -1,4 +1,5 @@
 #include "tab_view.h"
+#include "button.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -34,8 +35,51 @@ static void selection_changed(TabView *view, size_t index, void *userdata)
     ++*(int *)userdata;
 }
 
+static void button_clicked(Button *button, void *userdata)
+{
+    (void)button;
+    ++*(int *)userdata;
+}
+
 int main(void)
 {
+    int button_clicks = 0;
+    const VkDrawIcon *fake_icon =
+        (const VkDrawIcon *)(const void *)&button_clicks;
+    Button *icon_button = button_create_icon(
+        (Rect){0.0f, 0.0f, 24.0f, 24.0f}, style_default(), fake_icon);
+    if (!icon_button || icon_button->icon != fake_icon) {
+        fprintf(stderr, "Failed to create an icon button\n");
+        widget_destroy((Widget *)icon_button);
+        return 1;
+    }
+    button_set_click_handler(icon_button, button_clicked, &button_clicks);
+    SDL_Event button_ev = {0};
+    button_ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    button_ev.button.button = SDL_BUTTON_LEFT;
+    button_ev.button.x = 12;
+    button_ev.button.y = 12;
+    button_event((Widget *)icon_button, &button_ev);
+    button_ev.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    button_ev.button.x = 40;
+    button_event((Widget *)icon_button, &button_ev);
+    if (button_clicks != 0) {
+        fprintf(stderr, "Icon button activated after release outside\n");
+        widget_destroy((Widget *)icon_button);
+        return 1;
+    }
+    button_ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    button_ev.button.x = 12;
+    button_event((Widget *)icon_button, &button_ev);
+    button_ev.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    button_event((Widget *)icon_button, &button_ev);
+    if (button_clicks != 1) {
+        fprintf(stderr, "Icon button did not activate on a complete click\n");
+        widget_destroy((Widget *)icon_button);
+        return 1;
+    }
+    widget_destroy((Widget *)icon_button);
+
     TabView *view = tab_view_create((Rect){10.0f, 20.0f, 300.0f, 220.0f},
                                     NULL);
     TestContent *first = content_create();
@@ -63,9 +107,20 @@ int main(void)
         tab_view_active_index(view) != 0 ||
         tab_view_content(view, 1) != (Widget *)second ||
         strcmp(tab_view_title(view, 2), "scroll_view.c") != 0 ||
-        first->base.bounds.x != 10.0f || first->base.bounds.y != 56.0f ||
-        first->base.bounds.w != 300.0f || first->base.bounds.h != 184.0f) {
+        first->base.bounds.x != 10.0f || first->base.bounds.y != 54.0f ||
+        first->base.bounds.w != 300.0f || first->base.bounds.h != 186.0f) {
         fprintf(stderr, "Initial tab state or content layout is incorrect\n");
+        widget_destroy(tab_view_widget(view));
+        return 1;
+    }
+    const VkDrawIcon *test_icon = (const VkDrawIcon *)(const void *)first;
+    if (tab_view_icon(view, 1) != NULL ||
+        !tab_view_set_icon(view, 1, test_icon) ||
+        tab_view_icon(view, 1) != test_icon ||
+        !tab_view_set_icon(view, 1, NULL) ||
+        tab_view_icon(view, 1) != NULL ||
+        tab_view_set_icon(view, 3, test_icon)) {
+        fprintf(stderr, "Per-tab icon assignment did not preserve overrides\n");
         widget_destroy(tab_view_widget(view));
         return 1;
     }
@@ -131,8 +186,8 @@ int main(void)
 
     widget_set_bounds(tab_view_widget(view),
                       (Rect){0.0f, 0.0f, 400.0f, 300.0f});
-    if (second->base.bounds.x != 0.0f || second->base.bounds.y != 36.0f ||
-        second->base.bounds.w != 400.0f || second->base.bounds.h != 264.0f) {
+    if (second->base.bounds.x != 0.0f || second->base.bounds.y != 34.0f ||
+        second->base.bounds.w != 400.0f || second->base.bounds.h != 266.0f) {
         fprintf(stderr, "Resizing the TabView did not relayout content\n");
         widget_destroy(tab_view_widget(view));
         return 1;
@@ -171,8 +226,10 @@ int main(void)
     event = (SDL_Event){0};
     event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     event.button.button = SDL_BUTTON_LEFT;
-    event.button.x = 190;
+    event.button.x = 88;
     event.button.y = 12;
+    tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
+    event.type = SDL_EVENT_MOUSE_BUTTON_UP;
     tab_view_widget(view)->handle_event(tab_view_widget(view), &event);
     if (tab_view_tab_count(view) != 0 ||
         tab_view_active_index(view) != SIZE_MAX) {

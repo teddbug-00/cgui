@@ -16,6 +16,8 @@ struct Button {
     Widget base;              /* MUST be first */
 
     const char *label;
+    const VkDrawIcon *icon;
+    float icon_size;
     bool hovered;
     bool pressed;
 
@@ -27,6 +29,10 @@ struct Button {
 };
 
 Button *button_create(Rect bounds, Style style, const char *label);
+/** Create a button that centers a non-owning, renderer-loaded icon. */
+Button *button_create_icon(Rect bounds, Style style, const VkDrawIcon *icon);
+void button_set_icon(Button *btn, const VkDrawIcon *icon);
+void button_set_icon_size(Button *btn, float size);
 
 void button_set_click_handler(Button *btn, ButtonClickFn fn, void *userdata);
 

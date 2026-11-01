@@ -3,6 +3,7 @@
  */
 
 #include <SDL3/SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,18 +61,45 @@ static void document_draw(Widget *widget, struct VkContext *context)
 {
     (void)context;
     DemoDocument *document = (DemoDocument *)widget;
-    static const uint8_t title_color[4] = {35, 39, 46, 255};
-    static const uint8_t body_color[4] = {75, 81, 91, 255};
-    static const uint8_t gutter_color[4] = {133, 139, 148, 255};
+    static const uint8_t breadcrumb_color[4] = {111, 116, 124, 255};
+    static const uint8_t body_color[4] = {53, 58, 67, 255};
+    static const uint8_t gutter_color[4] = {145, 150, 158, 255};
+    static const uint8_t gutter_background[4] = {248, 249, 251, 255};
+    static const uint8_t current_line[4] = {245, 248, 252, 255};
     vk_draw_rounded_rect(g_draw, widget->bounds.x, widget->bounds.y,
                          widget->bounds.w, widget->bounds.h,
                          0.0f, 0.5f, document->color);
-    (void)vk_draw_text(g_draw, document->name, widget->bounds.x + 28.0f,
-                       widget->bounds.y + 24.0f, 20.0f, title_color);
-    (void)vk_draw_text(g_draw, "1   2   3   4", widget->bounds.x + 28.0f,
-                       widget->bounds.y + 76.0f, 14.0f, gutter_color);
-    (void)vk_draw_text(g_draw, document->source, widget->bounds.x + 116.0f,
-                       widget->bounds.y + 76.0f, 16.0f, body_color);
+    (void)vk_draw_text(g_draw, "Sources  /  cgui  /", widget->bounds.x + 20.0f,
+                       widget->bounds.y + 12.0f, 12.0f, breadcrumb_color);
+    (void)vk_draw_text(g_draw, document->name, widget->bounds.x + 144.0f,
+                       widget->bounds.y + 12.0f, 12.0f, body_color);
+
+    float code_y = widget->bounds.y + 38.0f;
+    vk_draw_rounded_rect(g_draw, widget->bounds.x, code_y - 4.0f,
+                         56.0f, widget->bounds.h - 34.0f,
+                         0.0f, 0.5f, gutter_background);
+    vk_draw_rounded_rect(g_draw, widget->bounds.x + 56.0f, code_y + 24.0f,
+                         fmaxf(0.0f, widget->bounds.w - 56.0f), 25.0f,
+                         0.0f, 0.5f, current_line);
+
+    const char *line = document->source;
+    for (size_t line_index = 0; *line && line_index < 8; ++line_index) {
+        const char *line_end = strchr(line, '\n');
+        size_t length = line_end ? (size_t)(line_end - line) : strlen(line);
+        char text[256];
+        if (length >= sizeof(text)) length = sizeof(text) - 1;
+        memcpy(text, line, length);
+        text[length] = '\0';
+        char number[8];
+        snprintf(number, sizeof(number), "%zu", line_index + 1);
+        float y = code_y + (float)line_index * 25.0f;
+        (void)vk_draw_text(g_draw, number, widget->bounds.x + 20.0f,
+                           y, 13.0f, gutter_color);
+        (void)vk_draw_text(g_draw, text, widget->bounds.x + 72.0f,
+                           y, 14.0f, body_color);
+        if (!line_end) break;
+        line = line_end + 1;
+    }
 }
 
 static DemoDocument *document_create(const char *name, const char *source,
@@ -103,11 +131,22 @@ static bool create_tabs(TabView **out, float width, float height)
     TabView *view = tab_view_create(
         (Rect){0.0f, 0.0f, width, height}, NULL);
     if (!view) return false;
+    VkDrawIcon *file_icon =
+        vk_draw_load_icon(g_draw, "assets/icons/file-text.svg", 16);
+    VkDrawIcon *lucide_x_icon =
+        vk_draw_load_icon(g_draw, "assets/icons/lucide-x.svg", 12);
+    if (!file_icon || !lucide_x_icon) {
+        fprintf(stderr, "Failed to load TabView icons\n");
+        widget_destroy(tab_view_widget(view));
+        return false;
+    }
+    tab_view_set_close_icon(view, lucide_x_icon);
     for (size_t i = 0; i < 3; ++i) {
         DemoDocument *document = document_create(titles[i], sources[i],
                                                   colors[i]);
         if (!document ||
-            !tab_view_add_tab(view, titles[i], (Widget *)document)) {
+            !tab_view_add_tab(view, titles[i], (Widget *)document) ||
+            !tab_view_set_icon(view, i, file_icon)) {
             if (document && !document->base.parent)
                 widget_destroy((Widget *)document);
             widget_destroy(tab_view_widget(view));

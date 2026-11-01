@@ -4,6 +4,7 @@
 
 #include "button.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <SDL3/SDL.h>
@@ -40,7 +41,15 @@ void button_draw(Widget *self, struct VkContext *vk)
     const Rect *b = &self->bounds;
     vk_draw_style_box(g_draw, b->x, b->y, b->w, b->h, &style);
 
-    if (btn->label && btn->label[0] != '\0') {
+    if (btn->icon) {
+        float icon_size = fminf(btn->icon_size, fminf(b->w, b->h));
+        if (icon_size > 0.0f) {
+            float x = floorf(b->x + (b->w - icon_size) * 0.5f + 0.5f);
+            float y = floorf(b->y + (b->h - icon_size) * 0.5f + 0.5f);
+            vk_draw_icon(g_draw, btn->icon, x, y, icon_size, icon_size,
+                         style.text_color);
+        }
+    } else if (btn->label && btn->label[0] != '\0') {
         (void)vk_draw_text_centered_styled(g_draw, btn->label,
                                            b->x, b->y, b->w, b->h,
                                            style.text_size, style.text_style,
@@ -76,20 +85,17 @@ void button_event(Widget *self, const void *ev_ptr)
                ev->button.button == SDL_BUTTON_LEFT) {
         mx = (float)ev->button.x;
         my = (float)ev->button.y;
-        if (point_in_rect(mx, my, &self->bounds)) {
-            btn->pressed = true;
-            btn->hovered = true;
-        }
+        btn->hovered = point_in_rect(mx, my, &self->bounds);
+        btn->pressed = btn->hovered;
     } else if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
                ev->button.button == SDL_BUTTON_LEFT) {
         mx = (float)ev->button.x;
         my = (float)ev->button.y;
         bool inside = point_in_rect(mx, my, &self->bounds);
-        if (btn->pressed && inside && btn->on_click) {
-            btn->on_click(btn, btn->userdata);
-        }
+        bool clicked = btn->pressed && inside;
         btn->pressed = false;
         btn->hovered = inside;
+        if (clicked && btn->on_click) btn->on_click(btn, btn->userdata);
     }
 }
 
@@ -107,12 +113,30 @@ Button *button_create(Rect bounds, Style style, const char *label)
     b->base.destroy      = widget_destroy_noop;
 
     b->label = label;
+    b->icon_size = fminf(bounds.w, bounds.h) * 0.6f;
 
     /* Default macOS-ish interaction colours (light grey → slightly darker) */
     b->hover_bg[0] = 245; b->hover_bg[1] = 245; b->hover_bg[2] = 247; b->hover_bg[3] = 255;
     b->press_bg[0] = 230; b->press_bg[1] = 230; b->press_bg[2] = 235; b->press_bg[3] = 255;
 
     return b;
+}
+
+Button *button_create_icon(Rect bounds, Style style, const VkDrawIcon *icon)
+{
+    Button *button = button_create(bounds, style, NULL);
+    if (button) button->icon = icon;
+    return button;
+}
+
+void button_set_icon(Button *btn, const VkDrawIcon *icon)
+{
+    if (btn) btn->icon = icon;
+}
+
+void button_set_icon_size(Button *btn, float size)
+{
+    if (btn && isfinite(size) && size > 0.0f) btn->icon_size = size;
 }
 
 void button_set_click_handler(Button *btn, ButtonClickFn fn, void *userdata)
