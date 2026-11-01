@@ -52,6 +52,7 @@ endforeach
 sources = files(
   'src/main.c',
   'src/gui.c',
+  'src/grid.c',
   'src/layout.c',
   'src/style.c',
   'src/text.c',
@@ -98,6 +99,17 @@ executable(
   install: false,
 )
 
+executable(
+  'cgui-grid-demo',
+  ['demos/grid_demo.c', 'src/gui.c', 'src/grid.c', 'src/layout.c',
+   'src/style.c', 'src/text.c', 'src/glyph_atlas.c', 'src/vk_context.c',
+   'src/vk_draw.c', 'src/spv_loader.c'],
+  spv_targets,
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+  install: false,
+)
+
 gui_test = executable(
   'cgui-gui-test',
   ['tests/gui_test.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
@@ -113,6 +125,14 @@ layout_test = executable(
   dependencies: [m_dep],
 )
 test('widget-layout', layout_test)
+
+grid_test = executable(
+  'cgui-grid-test',
+  ['tests/grid_test.c', 'src/grid.c', 'src/gui.c', 'src/layout.c', 'src/style.c'],
+  include_directories: include_directories('src'),
+  dependencies: [m_dep],
+)
+test('widget-grid', grid_test)
 
 text_test = executable(
   'cgui-text-test',
