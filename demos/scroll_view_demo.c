@@ -114,7 +114,7 @@ static bool create_scene(LayoutContainer **root_out, ScrollView **view_out,
     if (!root) return false;
 
     DemoCard *header = card_create(
-        "ScrollView", "Wheel to explore; content is clipped to the viewport.",
+        "ScrollView", "Scroll with the wheel or drag the scrollbar thumb.",
         header_color, 76.0f);
     if (!header || !layout_container_add_child(root, (Widget *)header)) {
         widget_destroy((Widget *)header);

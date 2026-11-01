@@ -90,6 +90,53 @@ int main(void)
         return 1;
     }
 
+    SDL_Event pointer = {0};
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 205;
+    pointer.button.y = 115;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!near(scroll_view_scroll_offset(view), 148.0f)) {
+        fprintf(stderr, "Scrollbar track click did not page the content\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    if (!scroll_view_set_scroll_offset(view, 0.0f)) {
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.button.y = 25;
+    view_widget->handle_event(view_widget, &pointer);
+    pointer.type = SDL_EVENT_MOUSE_MOTION;
+    pointer.motion.x = 205.0f;
+    pointer.motion.y = 85.0f;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!(scroll_view_scroll_offset(view) > 170.0f)) {
+        fprintf(stderr, "Dragging the scrollbar thumb did not track the pointer\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 300;
+    pointer.button.y = 300;
+    view_widget->handle_event(view_widget, &pointer);
+    float released_offset = scroll_view_scroll_offset(view);
+    pointer.type = SDL_EVENT_MOUSE_MOTION;
+    pointer.motion.x = 205.0f;
+    pointer.motion.y = 40.0f;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!near(scroll_view_scroll_offset(view), released_offset)) {
+        fprintf(stderr, "Scrollbar continued dragging after pointer release\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    if (!scroll_view_set_scroll_offset(view, 48.0f)) {
+        widget_destroy(view_widget);
+        return 1;
+    }
+
     wheel.wheel.mouse_x = 300.0f;
     view_widget->handle_event(view_widget, &wheel);
     if (!near(scroll_view_scroll_offset(view), 48.0f)) {
@@ -165,6 +212,16 @@ int main(void)
         !near(scroll_view_scroll_offset(view), 0.0f) ||
         !near(content->bounds.y, 0.0f)) {
         fprintf(stderr, "Content shrink did not reset the scroll position\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    pointer.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pointer.button.button = SDL_BUTTON_LEFT;
+    pointer.button.x = 195;
+    pointer.button.y = 240;
+    view_widget->handle_event(view_widget, &pointer);
+    if (!near(scroll_view_scroll_offset(view), 0.0f)) {
+        fprintf(stderr, "Scrollbar remained interactive without overflow\n");
         widget_destroy(view_widget);
         return 1;
     }
