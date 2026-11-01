@@ -14,12 +14,16 @@ struct ScrollView {
     ScrollViewStyle view_style;
     Widget *content;
     float content_height;
-    float scroll_offset;
-    float target_offset;
+    float position;
     float velocity;
 };
 
 static VkDraw *g_draw;
+
+#define SCROLL_FRICTION 8.0f
+#define SCROLL_SPRING_STIFFNESS 100.0f
+#define SCROLL_SPRING_DAMPING 20.0f
+#define SCROLL_RUBBER_BAND_FACTOR 0.55f
 
 static bool point_in_rect(float x, float y, const Rect *rect)
 {
@@ -38,12 +42,32 @@ float scroll_view_max_scroll(const ScrollView *view)
     return fmaxf(0.0f, view->content_height - view->base.bounds.h);
 }
 
+static float rubber_band(float distance, float dimension)
+{
+    if (distance <= 0.0f || dimension <= 0.0f) return 0.0f;
+    return dimension * (1.0f - 1.0f /
+        (distance * SCROLL_RUBBER_BAND_FACTOR / dimension + 1.0f));
+}
+
+static float displayed_scroll_offset(const ScrollView *view)
+{
+    float maximum = scroll_view_max_scroll(view);
+    if (view->position < 0.0f) {
+        return -rubber_band(-view->position, view->base.bounds.h);
+    }
+    if (view->position > maximum) {
+        return maximum + rubber_band(view->position - maximum,
+                                     view->base.bounds.h);
+    }
+    return view->position;
+}
+
 static void update_content_bounds(ScrollView *view)
 {
     if (!view || !view->content) return;
     view->content->bounds = (Rect) {
         .x = view->base.bounds.x,
-        .y = view->base.bounds.y - view->scroll_offset,
+        .y = view->base.bounds.y - displayed_scroll_offset(view),
         .w = view->base.bounds.w,
         .h = fmaxf(view->content_height, view->base.bounds.h),
     };
@@ -54,8 +78,7 @@ static void scroll_view_layout(Widget *self)
 {
     ScrollView *view = (ScrollView *)self;
     float maximum = scroll_view_max_scroll(view);
-    view->target_offset = fminf(maximum, fmaxf(0.0f, view->target_offset));
-    view->scroll_offset = fminf(maximum, fmaxf(0.0f, view->scroll_offset));
+    view->position = fminf(maximum, fmaxf(0.0f, view->position));
     view->velocity = 0.0f;
     update_content_bounds(view);
 }
@@ -82,19 +105,11 @@ static void scroll_view_event(Widget *self, const void *event)
     const SDL_Event *ev = event;
     if (!view->content || !ev) return;
     if (ev->type == SDL_EVENT_MOUSE_WHEEL &&
-        point_in_rect((float)ev->wheel.mouse_x, (float)ev->wheel.mouse_y,
-                      &self->bounds)) {
+        point_in_rect(ev->wheel.mouse_x, ev->wheel.mouse_y, &self->bounds)) {
         float direction = ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
             ? 1.0f : -1.0f;
         float delta = direction * ev->wheel.y * view->view_style.wheel_step;
-        float maximum = scroll_view_max_scroll(view);
-        float requested = view->target_offset + delta;
-        view->target_offset = fminf(maximum, fmaxf(0.0f, requested));
-        if (requested < 0.0f || requested > maximum) {
-            float outward = requested < 0.0f ? requested
-                                                : requested - maximum;
-            view->velocity += outward * 12.0f;
-        }
+        view->velocity += delta * SCROLL_FRICTION;
         return;
     }
     if ((ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
@@ -154,9 +169,7 @@ bool scroll_view_set_content_height(ScrollView *view, float content_height)
         return false;
     }
     view->content_height = content_height;
-    float maximum = scroll_view_max_scroll(view);
-    view->target_offset = fminf(view->target_offset, maximum);
-    view->scroll_offset = fminf(view->scroll_offset, maximum);
+    view->position = fminf(view->position, scroll_view_max_scroll(view));
     view->velocity = 0.0f;
     update_content_bounds(view);
     return true;
@@ -166,9 +179,7 @@ bool scroll_view_set_scroll_offset(ScrollView *view, float offset)
 {
     if (!view || !isfinite(offset)) return false;
     float maximum = scroll_view_max_scroll(view);
-    float clamped = fminf(maximum, fmaxf(0.0f, offset));
-    view->target_offset = clamped;
-    view->scroll_offset = clamped;
+    view->position = fminf(maximum, fmaxf(0.0f, offset));
     view->velocity = 0.0f;
     update_content_bounds(view);
     return true;
@@ -185,28 +196,37 @@ void scroll_view_update(ScrollView *view, float delta_seconds)
     while (remaining > 0.0f) {
         float dt = fminf(remaining, 1.0f / 120.0f);
         float maximum = scroll_view_max_scroll(view);
-        float boundary_target = fminf(maximum,
-                                      fmaxf(0.0f, view->target_offset));
-        float acceleration = (boundary_target - view->scroll_offset) * 180.0f -
-                             view->velocity * 26.0f;
-        view->velocity += acceleration * dt;
-        view->scroll_offset += view->velocity * dt;
-
-        if (view->scroll_offset < 0.0f) {
-            float spring = -view->scroll_offset * 240.0f;
-            view->velocity += (spring - view->velocity * 28.0f) * dt;
-        } else if (view->scroll_offset > maximum) {
-            float spring = (maximum - view->scroll_offset) * 240.0f;
-            view->velocity += (spring - view->velocity * 28.0f) * dt;
+        if (view->position < 0.0f) {
+            float acceleration = -SCROLL_SPRING_STIFFNESS * view->position -
+                                SCROLL_SPRING_DAMPING * view->velocity;
+            view->velocity += acceleration * dt;
+            view->position += view->velocity * dt;
+        } else if (view->position > maximum) {
+            float displacement = view->position - maximum;
+            float acceleration = -SCROLL_SPRING_STIFFNESS * displacement -
+                                SCROLL_SPRING_DAMPING * view->velocity;
+            view->velocity += acceleration * dt;
+            view->position += view->velocity * dt;
+        } else {
+            float decay = expf(-SCROLL_FRICTION * dt);
+            view->position += view->velocity *
+                              (1.0f - decay) / SCROLL_FRICTION;
+            view->velocity *= decay;
         }
         remaining -= dt;
     }
 
     float maximum = scroll_view_max_scroll(view);
-    if (fabsf(view->target_offset - view->scroll_offset) < 0.05f &&
-        fabsf(view->velocity) < 0.5f &&
-        view->scroll_offset >= 0.0f && view->scroll_offset <= maximum) {
-        view->scroll_offset = view->target_offset;
+    if (view->position < 0.0f && fabsf(view->position) < 0.01f) {
+        view->position = 0.0f;
+        view->velocity = 0.0f;
+    } else if (view->position > maximum &&
+               fabsf(view->position - maximum) < 0.01f) {
+        view->position = maximum;
+        view->velocity = 0.0f;
+    }
+    if (fabsf(view->velocity) < 0.05f &&
+        view->position >= 0.0f && view->position <= maximum) {
         view->velocity = 0.0f;
     }
     update_content_bounds(view);
@@ -214,7 +234,7 @@ void scroll_view_update(ScrollView *view, float delta_seconds)
 
 float scroll_view_scroll_offset(const ScrollView *view)
 {
-    return view ? view->scroll_offset : 0.0f;
+    return view ? displayed_scroll_offset(view) : 0.0f;
 }
 
 void scroll_view_set_draw_context(VkDraw *draw)

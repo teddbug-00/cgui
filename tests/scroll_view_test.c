@@ -80,7 +80,7 @@ int main(void)
         widget_destroy(view_widget);
         return 1;
     }
-    for (int i = 0; i < 120; ++i) {
+    for (int i = 0; i < 240; ++i) {
         scroll_view_update(view, 1.0f / 120.0f);
     }
     if (!near(scroll_view_scroll_offset(view), 48.0f) ||
