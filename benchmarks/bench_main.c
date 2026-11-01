@@ -29,6 +29,7 @@
 #include "label.h"
 #include "toggle.h"
 #include "slider.h"
+#include "text_field.h"
 
 /* ------------------------------------------------------------------ */
 /* High-resolution timer helpers                                       */
@@ -205,6 +206,20 @@ static void bench_widget_lifecycle(void)
         print_bench_result("Slider Create + Destroy", iters, elapsed);
     }
 
+    /* TextField creation (includes buffer alloc + strdup placeholder) */
+    {
+        uint64_t iters = 100000;
+        Style s = style_default();
+        Rect r = { 0, 0, 280, 38 };
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            TextField *tf = text_field_create(r, s, "Search…");
+            widget_destroy((Widget *)tf);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("TextField Create + Destroy", iters, elapsed);
+    }
+
     /* Deep Scene Graph: 1 Panel with 100 child widgets */
     {
         uint64_t iters = 2000;
@@ -314,6 +329,45 @@ static void bench_events_and_animation(void)
             widget_destroy((Widget *)toggles[i]);
         }
         free(toggles);
+    }
+
+    /* TextField keystroke throughput: focused text input event processing */
+    {
+        uint64_t iters = 200000;
+        Rect r = { 10.0f, 10.0f, 300.0f, 38.0f };
+        TextField *tf = text_field_create(r, style_default(), NULL);
+        text_field_set_focused(tf, true);
+
+        SDL_Event ev = {0};
+        ev.type = SDL_EVENT_TEXT_INPUT;
+        ev.text.text = "a";
+
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            text_field_event((Widget *)tf, &ev);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("TextField Text Input (200k keystrokes)", iters, elapsed);
+
+        widget_destroy((Widget *)tf);
+    }
+
+    /* TextField cursor blink update throughput */
+    {
+        uint64_t iters = 1000000;
+        Rect r = { 0, 0, 200, 38 };
+        TextField *tf = text_field_create(r, style_default(), NULL);
+        text_field_set_focused(tf, true);
+        float dt = 1.0f / 60.0f;
+
+        uint64_t start = get_time_ns();
+        for (uint64_t i = 0; i < iters; ++i) {
+            text_field_update(tf, dt);
+        }
+        uint64_t elapsed = get_time_ns() - start;
+        print_bench_result("TextField Blink Update (1M frames)", iters, elapsed);
+
+        widget_destroy((Widget *)tf);
     }
 }
 

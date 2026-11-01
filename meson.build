@@ -59,6 +59,7 @@ sources = files(
   'src/label.c',
   'src/toggle.c',
   'src/slider.c',
+  'src/text_field.c',
   'src/vk_context.c',
   'src/vk_draw.c',
   'src/spv_loader.c',
@@ -105,9 +106,17 @@ slider_test = executable(
 )
 test('slider-widget', slider_test)
 
+text_field_test = executable(
+  'cgui-text-field-test',
+  ['tests/text_field_test.c', 'src/text_field.c', 'src/gui.c', 'src/style.c', 'src/vk_draw.c', 'src/glyph_atlas.c', 'src/text.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  include_directories: include_directories('src'),
+  dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
+)
+test('text-field-widget', text_field_test)
+
 bench_exe = executable(
   'cgui-bench',
-  ['benchmarks/bench_main.c', 'src/gui.c', 'src/style.c', 'src/glyph_atlas.c', 'src/text.c', 'src/panel.c', 'src/button.c', 'src/label.c', 'src/toggle.c', 'src/slider.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
+  ['benchmarks/bench_main.c', 'src/gui.c', 'src/style.c', 'src/glyph_atlas.c', 'src/text.c', 'src/panel.c', 'src/button.c', 'src/label.c', 'src/toggle.c', 'src/slider.c', 'src/text_field.c', 'src/vk_draw.c', 'src/vk_context.c', 'src/spv_loader.c'],
   include_directories: include_directories('src'),
   dependencies: [sdl3_dep, vulkan_dep, freetype_dep, harfbuzz_dep, fontconfig_dep, m_dep],
 )

@@ -16,6 +16,7 @@
 #include "label.h"
 #include "toggle.h"
 #include "slider.h"
+#include "text_field.h"
 #include "vk_context.h"
 #include "vk_draw.h"
 #include "spv_loader.h"
@@ -73,6 +74,27 @@ static void on_slider_change(Slider *self, float val, void *userdata)
     (void) self;
     (void) userdata;
     printf("Brightness level: %.0f%%\n", val);
+}
+
+static void on_search_change(TextField *self, const char *text, void *userdata)
+{
+    (void) self;
+    (void) userdata;
+    printf("Search text: \"%s\"\n", text);
+}
+
+static void on_search_submit(TextField *self, const char *text, void *userdata)
+{
+    (void) self;
+    (void) userdata;
+    printf("Search submitted: \"%s\"\n", text);
+}
+
+static void on_name_submit(TextField *self, const char *text, void *userdata)
+{
+    (void) self;
+    (void) userdata;
+    printf("Name entered: \"%s\"\n", text);
 }
 
 static bool load_spv_candidates(const char **paths, uint32_t **words, size_t *count)
@@ -176,6 +198,7 @@ int main(int argc, char **argv)
     label_set_draw_context(&app.draw);
     toggle_set_draw_context(&app.draw);
     slider_set_draw_context(&app.draw);
+    text_field_set_draw_context(&app.draw);
 
     app.root = widget_create();
     if (!app.root) return 1;
@@ -189,7 +212,7 @@ int main(int argc, char **argv)
     card_style.shadow_blur     = 28.0f;
     card_style.shadow_color[3] = 55;
 
-    Rect card_box = {440.0f, 160.0f, 400.0f, 440.0f};
+    Rect card_box = {440.0f, 160.0f, 400.0f, 520.0f};
     Panel *card   = panel_create(card_box, card_style);
     if (card)
     {
@@ -315,7 +338,54 @@ int main(int argc, char **argv)
         widget_add_child(app.root, (Widget *) btn);
     }
 
-    printf("cgui running – interactive switch and button active\n");
+    /* ---- Search text field ---- */
+    Style tf_style           = style_default();
+    tf_style.corner_radius   = 10.0f;
+    tf_style.border_width    = 0.0f;
+    tf_style.shadow_color[3] = 0;
+    tf_style.bg[3]           = 0;
+
+    Style tf_lbl_style           = style_default();
+    tf_lbl_style.text_size       = 13.0f;
+    tf_lbl_style.text_style      = CGUI_TEXT_REGULAR;
+    tf_lbl_style.text_color[0]   = 120;
+    tf_lbl_style.text_color[1]   = 120;
+    tf_lbl_style.text_color[2]   = 128;
+    tf_lbl_style.text_color[3]   = 255;
+    tf_lbl_style.bg[3]           = 0;
+    tf_lbl_style.border_width    = 0.0f;
+    tf_lbl_style.shadow_color[3] = 0;
+
+    Rect search_lbl_box = {470.0f, 530.0f, 340.0f, 18.0f};
+    Label *search_lbl   = label_create(search_lbl_box, tf_lbl_style, "Search");
+    if (search_lbl) widget_add_child(app.root, (Widget *) search_lbl);
+
+    Rect search_box      = {470.0f, 552.0f, 340.0f, 38.0f};
+    TextField *search_tf = text_field_create(search_box, tf_style, "Search settings…");
+    if (search_tf)
+    {
+        text_field_set_change_handler(search_tf, on_search_change, NULL);
+        text_field_set_submit_handler(search_tf, on_search_submit, NULL);
+        widget_add_child(app.root, (Widget *) search_tf);
+    }
+
+    /* ---- Name text field ---- */
+    Rect name_lbl_box = {470.0f, 602.0f, 340.0f, 18.0f};
+    Label *name_lbl   = label_create(name_lbl_box, tf_lbl_style, "Display name");
+    if (name_lbl) widget_add_child(app.root, (Widget *) name_lbl);
+
+    Rect name_box      = {470.0f, 624.0f, 340.0f, 38.0f};
+    TextField *name_tf = text_field_create(name_box, tf_style, "Enter your name…");
+    if (name_tf)
+    {
+        text_field_set_submit_handler(name_tf, on_name_submit, NULL);
+        widget_add_child(app.root, (Widget *) name_tf);
+    }
+
+    /* Enable SDL text input so SDL_EVENT_TEXT_INPUT events are delivered */
+    SDL_StartTextInput(window);
+
+    printf("cgui running – interactive switch, button, and text fields active\n");
 
     Uint64 last_time = SDL_GetTicksNS();
 
@@ -326,10 +396,10 @@ int main(int argc, char **argv)
         last_time  = now;
         if (dt > 0.1f) dt = 0.1f;
 
-        if (toggle)
-        {
-            toggle_update(toggle, dt);
-        }
+        if (toggle) toggle_update(toggle, dt);
+        if (search_tf) text_field_update(search_tf, dt);
+        if (name_tf)   text_field_update(name_tf,   dt);
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev))
         {
@@ -372,6 +442,7 @@ int main(int argc, char **argv)
     }
 
     widget_destroy(app.root);
+    SDL_StopTextInput(window);
     vk_draw_destroy(&app.draw);
     vk_context_destroy(&app.vk);
     SDL_DestroyWindow(window);
