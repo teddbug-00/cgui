@@ -14,6 +14,8 @@
 
 typedef struct VkDraw {
     VkContext *ctx;
+    VkRect2D clip_stack[32];
+    uint32_t clip_depth;
 
     /* Rounded-rectangle body and offscreen shadow-mask pipelines */
     VkShaderModule   rr_vert;
@@ -95,6 +97,10 @@ void vk_draw_destroy(VkDraw *d);
 
 /** Recreate offscreen shadow images after swapchain resize. */
 bool vk_draw_resize(VkDraw *d);
+
+/** Intersect subsequent UI rendering with a nested viewport clip. */
+bool vk_draw_clip_push(VkDraw *d, float x, float y, float w, float h);
+void vk_draw_clip_pop(VkDraw *d);
 
 typedef struct VkDrawIcon VkDrawIcon;
 typedef struct VkDrawFont VkDrawFont;

@@ -128,6 +128,74 @@ struct VkDrawFont {
     struct VkDrawFont *next;
 };
 
+static VkRect2D current_draw_scissor(const VkDraw *draw)
+{
+    if (draw->clip_depth > 0) {
+        return draw->clip_stack[draw->clip_depth - 1];
+    }
+    return (VkRect2D) {
+        .offset = {0, 0},
+        .extent = draw->ctx->swapchain_extent,
+    };
+}
+
+static VkRect2D intersect_scissors(VkRect2D a, VkRect2D b)
+{
+    int64_t x0 = a.offset.x > b.offset.x ? a.offset.x : b.offset.x;
+    int64_t y0 = a.offset.y > b.offset.y ? a.offset.y : b.offset.y;
+    int64_t ax1 = (int64_t)a.offset.x + a.extent.width;
+    int64_t ay1 = (int64_t)a.offset.y + a.extent.height;
+    int64_t bx1 = (int64_t)b.offset.x + b.extent.width;
+    int64_t by1 = (int64_t)b.offset.y + b.extent.height;
+    int64_t x1 = ax1 < bx1 ? ax1 : bx1;
+    int64_t y1 = ay1 < by1 ? ay1 : by1;
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+    return (VkRect2D) {
+        .offset = { (int32_t)x0, (int32_t)y0 },
+        .extent = { (uint32_t)(x1 - x0), (uint32_t)(y1 - y0) },
+    };
+}
+
+bool vk_draw_clip_push(VkDraw *draw, float x, float y, float w, float h)
+{
+    if (!draw || !draw->ctx || !draw->ctx->frame_open ||
+        draw->clip_depth >= sizeof(draw->clip_stack) /
+                            sizeof(draw->clip_stack[0]) ||
+        !isfinite(x) || !isfinite(y) || !isfinite(w) || !isfinite(h)) {
+        return false;
+    }
+
+    VkRect2D parent = current_draw_scissor(draw);
+    double clip_x0 = floor((double)x);
+    double clip_y0 = floor((double)y);
+    double clip_x1 = ceil((double)x + fmaxf(0.0f, w));
+    double clip_y1 = ceil((double)y + fmaxf(0.0f, h));
+    double parent_x0 = parent.offset.x;
+    double parent_y0 = parent.offset.y;
+    double parent_x1 = parent_x0 + parent.extent.width;
+    double parent_y1 = parent_y0 + parent.extent.height;
+    if (clip_x0 < parent_x0) clip_x0 = parent_x0;
+    if (clip_y0 < parent_y0) clip_y0 = parent_y0;
+    if (clip_x1 > parent_x1) clip_x1 = parent_x1;
+    if (clip_y1 > parent_y1) clip_y1 = parent_y1;
+    if (clip_x1 < clip_x0) clip_x1 = clip_x0;
+    if (clip_y1 < clip_y0) clip_y1 = clip_y0;
+    if (clip_x1 == clip_x0 || clip_y1 == clip_y0) return false;
+
+    draw->clip_stack[draw->clip_depth++] = (VkRect2D) {
+        .offset = { (int32_t)clip_x0, (int32_t)clip_y0 },
+        .extent = { (uint32_t)(clip_x1 - clip_x0),
+                    (uint32_t)(clip_y1 - clip_y0) },
+    };
+    return true;
+}
+
+void vk_draw_clip_pop(VkDraw *draw)
+{
+    if (draw && draw->clip_depth > 0) --draw->clip_depth;
+}
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -1055,7 +1123,7 @@ void vk_draw_icon(VkDraw *d, const VkDrawIcon *icon,
         .height = (float)d->ctx->swapchain_extent.height,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .extent = d->ctx->swapchain_extent };
+    VkRect2D scissor = current_draw_scissor(d);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->icon_pipeline);
@@ -1517,7 +1585,7 @@ void vk_draw_rounded_rect(VkDraw *d,
         .height = (float)ctx->swapchain_extent.height,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .extent = ctx->swapchain_extent };
+    VkRect2D scissor = current_draw_scissor(d);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d->rr_pipeline);
@@ -1741,6 +1809,8 @@ static bool draw_shadow_batched(VkDraw *d, const ShadowRecord *record)
         .offset = { x0, y0 },
         .extent = { (uint32_t)(x1 - x0), (uint32_t)(y1 - y0) },
     };
+    scissor = intersect_scissors(scissor, current_draw_scissor(d));
+    if (scissor.extent.width == 0 || scissor.extent.height == 0) return true;
     VkViewport viewport = {
         .width = (float)d->ctx->swapchain_extent.width,
         .height = (float)d->ctx->swapchain_extent.height,
@@ -2029,7 +2099,7 @@ static bool draw_text_at(VkDraw *d, const char *utf8, float x, float y,
         .height = (float)ctx->swapchain_extent.height,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .extent = ctx->swapchain_extent };
+    VkRect2D scissor = current_draw_scissor(d);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 

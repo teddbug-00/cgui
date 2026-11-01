@@ -1,0 +1,112 @@
+#include "scroll_view.h"
+
+#include <SDL3/SDL.h>
+#include <math.h>
+#include <stdio.h>
+
+static bool near(float actual, float expected)
+{
+    return fabsf(actual - expected) < 0.01f;
+}
+
+int main(void)
+{
+    VkContext clip_context = {0};
+    clip_context.frame_open = true;
+    clip_context.swapchain_extent = (VkExtent2D){300, 200};
+    VkDraw clip_draw = { .ctx = &clip_context };
+    if (!vk_draw_clip_push(&clip_draw, 10.4f, 20.2f, 100.1f, 50.2f) ||
+        clip_draw.clip_depth != 1 ||
+        clip_draw.clip_stack[0].offset.x != 10 ||
+        clip_draw.clip_stack[0].offset.y != 20 ||
+        clip_draw.clip_stack[0].extent.width != 101 ||
+        clip_draw.clip_stack[0].extent.height != 51 ||
+        !vk_draw_clip_push(&clip_draw, 50.0f, 0.0f, 100.0f, 100.0f) ||
+        clip_draw.clip_depth != 2 ||
+        clip_draw.clip_stack[1].offset.x != 50 ||
+        clip_draw.clip_stack[1].offset.y != 20 ||
+        clip_draw.clip_stack[1].extent.width != 61 ||
+        clip_draw.clip_stack[1].extent.height != 51) {
+        fprintf(stderr, "Nested draw clipping did not intersect correctly\n");
+        return 1;
+    }
+    vk_draw_clip_pop(&clip_draw);
+    if (clip_draw.clip_depth != 1 ||
+        vk_draw_clip_push(&clip_draw, 250.0f, 0.0f, 20.0f, 20.0f) ||
+        clip_draw.clip_depth != 1) {
+        fprintf(stderr, "Clip pop or off-screen clipping failed\n");
+        return 1;
+    }
+    vk_draw_clip_pop(&clip_draw);
+
+    ScrollView *view = scroll_view_create(
+        (Rect){10.0f, 20.0f, 200.0f, 100.0f},
+        scroll_view_style_default());
+    Widget *content = widget_create();
+    if (!view || !content ||
+        !scroll_view_set_content(view, content, 300.0f)) {
+        widget_destroy(scroll_view_widget(view));
+        if (!content || !content->parent) widget_destroy(content);
+        fprintf(stderr, "Failed to create scroll view content\n");
+        return 1;
+    }
+
+    Widget *view_widget = scroll_view_widget(view);
+    if (!near(scroll_view_max_scroll(view), 200.0f) ||
+        !near(content->bounds.x, 10.0f) ||
+        !near(content->bounds.y, 20.0f) ||
+        !near(content->bounds.w, 200.0f) ||
+        !near(content->bounds.h, 300.0f)) {
+        fprintf(stderr, "Initial viewport/content bounds are incorrect\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    SDL_Event wheel = {0};
+    wheel.type = SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.mouse_x = 50.0f;
+    wheel.wheel.mouse_y = 50.0f;
+    wheel.wheel.y = -1.0f;
+    view_widget->handle_event(view_widget, &wheel);
+    if (!near(scroll_view_scroll_offset(view), 48.0f) ||
+        !near(content->bounds.y, -28.0f)) {
+        fprintf(stderr, "Wheel scrolling did not update content position\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    wheel.wheel.mouse_x = 300.0f;
+    view_widget->handle_event(view_widget, &wheel);
+    if (!near(scroll_view_scroll_offset(view), 48.0f)) {
+        fprintf(stderr, "Wheel outside viewport changed scroll offset\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    if (!scroll_view_set_scroll_offset(view, 1000.0f) ||
+        !near(scroll_view_scroll_offset(view), 200.0f)) {
+        fprintf(stderr, "Scroll offset was not clamped to content bounds\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    widget_set_bounds(view_widget, (Rect){0.0f, 0.0f, 200.0f, 250.0f});
+    if (!near(scroll_view_max_scroll(view), 50.0f) ||
+        !near(scroll_view_scroll_offset(view), 50.0f) ||
+        !near(content->bounds.y, -50.0f)) {
+        fprintf(stderr, "Resize did not clamp and reposition scroll content\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+    if (!scroll_view_set_content_height(view, 100.0f) ||
+        !near(scroll_view_max_scroll(view), 0.0f) ||
+        !near(scroll_view_scroll_offset(view), 0.0f) ||
+        !near(content->bounds.y, 0.0f)) {
+        fprintf(stderr, "Content shrink did not reset the scroll position\n");
+        widget_destroy(view_widget);
+        return 1;
+    }
+
+    puts("ScrollView tests passed!");
+    widget_destroy(view_widget);
+    return 0;
+}
